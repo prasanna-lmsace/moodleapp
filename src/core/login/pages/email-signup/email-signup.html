@@ -136,6 +136,41 @@
                 </ion-item>
             </ng-container>
 
+             <ion-item>
+                <ion-label  id="">{{'core.login.qualification' | translate }} </ion-label>
+                 <ion-input name="qualificationFile" type="hidden" formControlName="qualificationFile" [value]="qualification.name"></ion-input>
+            </ion-item>
+             <ion-item >                
+                <button  ion-button type="button" class="primary" *ngIf="canUploadDocuments" (click)="uploadQualification()" ame="qualification" > {{'core.login.uploadfile' | translate}} </button>
+                <ion-icon class="core-input-required-asterisk icon icon-md ion-ios-medical ng-star-inserted" md="ios-medical" name="medical" role="img" aria-label="medical" ng-reflect-name="medical" ng-reflect-md="ios-medical" title="Required"></ion-icon>                
+               
+                <p *ngIf="qualification" class="item-heading padding"><core-format-text [text]="qualification.name" [filter]="false"></core-format-text></p>
+                <!-- <core-input-errors [control]="signupForm.controls.qualificationFile" [errorMessages]="qualificationFile"></core-input-errors> -->
+                <div *ngIf="signupForm.value.qualificationFile == '' && checked"  class="validator-error">
+                    <div class="core-input-error ng-star-inserted">
+                        <span class="ng-star-inserted">{{'core.required' | translate}}</span>
+                    </div>
+                </div>
+            </ion-item>
+           
+
+            <ion-item>
+                <ion-label  id=""> {{'core.login.identification' | translate }} </ion-label>
+                <ion-input name="identificationFile" type="hidden" formControlName="identificationFile" [value]="identification.name"></ion-input>
+                <!-- <core-input-errors [control]="signupForm.controls.identificationFile" [errorMessages]="identificationFile"></core-input-errors> -->
+            </ion-item>
+            <ion-item >               
+                <button ion-button type="button" class="primary" *ngIf="canUploadDocuments" (click)="uploadIdentification()" ame="identifiation" > {{'core.login.uploadfile' | translate}} </button>
+                <ion-icon class="core-input-required-asterisk icon icon-md ion-ios-medical ng-star-inserted" md="ios-medical" name="medical" role="img" aria-label="medical" ng-reflect-name="medical" ng-reflect-md="ios-medical" title="Required"></ion-icon>                       
+                  <p *ngIf="identification" class="item-heading padding"><core-format-text [text]="identification.name" [filter]="false"></core-format-text></p>
+                <div *ngIf="signupForm.value.identificationFile == '' && checked"  class="validator-error">
+                    <div class="core-input-error ng-star-inserted">
+                        <span class="ng-star-inserted">{{'core.required' | translate}} </span>
+                    </div>
+                </div>
+            </ion-item>
+            
+
             <!-- Submit button. -->
             <ion-item padding>
                 <button ion-button block color="primary" type="submit">{{ 'core.login.createaccount' | translate }}</button>

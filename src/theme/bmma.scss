@@ -1,0 +1,13 @@
+ion-app.app-root page-core-mainmenu-more ion-icon {
+	color: $core-color !important;
+}
+.item-md ion-icon[item-start] {
+	color: $core-color;
+}
+.tabs-md .tab-button[aria-selected=true] .tab-button-icon.icon-md {
+	color: $white;
+}
+[dir="ltr"] .tabs-md[tabsLayout=title-hide] .tab-button:hover {
+	background: $brown;
+	opacity: 1;
+}

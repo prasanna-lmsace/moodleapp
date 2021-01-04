@@ -409,7 +409,7 @@ export class CoreLoginHelperProvider {
                 return sitePolicy ? sitePolicy : Promise.reject(null);
             }, () => {
                 // Cannot get config, try to get the site policy using auth_email_get_signup_settings.
-                return this.wsProvider.callAjax('auth_email_get_signup_settings', {}, { siteUrl: site.getURL() })
+                return this.wsProvider.callAjax('auth_emailadmin_get_signup_settings', {}, { siteUrl: site.getURL() })
                         .then((settings) => {
                     return settings.sitepolicy ? settings.sitepolicy : Promise.reject(null);
                 });

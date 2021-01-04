@@ -270,7 +270,7 @@ export class CoreDelegate {
             this.updatePromises[siteId] = {};
         }
 
-        if (!this.sitesProvider.isLoggedIn()) {
+        if (!this.sitesProvider.isLoggedIn() && handler.name != 'CoreFileUploaderFile') {
             promise = Promise.reject(null);
         } else if (this.isFeatureDisabled(handler, currentSite)) {
             promise = Promise.resolve(false);

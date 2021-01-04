@@ -40,6 +40,10 @@ export class CoreUserAboutPage {
     user: any = {};
     title: string;
 
+        file_qualification: any = {};
+    file_identification: any = {};
+
+
     constructor(navParams: NavParams, private userProvider: CoreUserProvider, private userHelper: CoreUserHelperProvider,
             private domUtils: CoreDomUtilsProvider, private eventsProvider: CoreEventsProvider,
             private sitesProvider: CoreSitesProvider, private textUtils: CoreTextUtilsProvider) {
@@ -75,9 +79,33 @@ export class CoreUserAboutPage {
 
             this.user = user;
             this.title = user.fullname;
+
+            this.fetchUserDocuments();
         }).catch((error) => {
             this.domUtils.showErrorModalDefault(error, 'core.user.errorloaduser', true);
         });
+    }
+
+    
+    // lmsace.
+    fetchUserDocuments() : Promise<any> {
+        return this.sitesProvider.getSite(this.siteId).then((site) => {
+            site.read('theme_moove_get_user_documents', {userid: this.userId }).then((result) => {
+                console.log(result);
+                // for (let i =0; i <= result.length; i++){
+
+                // }
+                    this.file_qualification.url = result[1].image;
+                    this.file_qualification.name = (result[1].image) ? result[1].name : '';
+                    console.log(this.file_qualification);
+                // }
+
+               
+                    this.file_identification.url = result[0].image;
+                    this.file_identification.name = (result[0].image) ? result[0].name : '';
+                
+            })
+        })
     }
 
     /**

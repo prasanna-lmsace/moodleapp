@@ -1,4 +1,4 @@
-// (C) Copyright 2015 Moodle Pty Ltd.
+// (C) Copyright 2015 Martin Dougiamas
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,12 @@ import { CoreComponentsModule } from '@components/components.module';
 import { CoreDirectivesModule } from '@directives/directives.module';
 import { CoreUserComponentsModule } from '@core/user/components/components.module';
 
+// LMSACE File upload options.
+import{ CoreFileUploaderModule } from '@core/fileuploader/fileuploader.module';
+import{ CoreFileUploaderDelegate } from '@core/fileuploader/providers/delegate';
+
+import { CoreFileUploaderFileHandler } from '@core/fileuploader/providers/file-handler';
+
 @NgModule({
     declarations: [
         CoreLoginEmailSignupPage
@@ -29,7 +35,14 @@ import { CoreUserComponentsModule } from '@core/user/components/components.modul
         CoreDirectivesModule,
         CoreUserComponentsModule,
         IonicPageModule.forChild(CoreLoginEmailSignupPage),
-        TranslateModule.forChild()
+        TranslateModule.forChild(),
+        CoreFileUploaderModule
     ]
 })
-export class CoreLoginCredentialsPageModule {}
+export class CoreLoginCredentialsPageModule {
+    
+    constructor( coreFileUploaderDelegate: CoreFileUploaderDelegate, 
+        coreFileUploaderModule: CoreFileUploaderModule,fileHandler: CoreFileUploaderFileHandler ) {
+        coreFileUploaderDelegate.updateHandler1(fileHandler, Date.now());
+    }
+}

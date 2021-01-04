@@ -769,7 +769,7 @@ export class CoreWSProvider {
      */
     uploadFile(filePath: string, options: CoreWSFileUploadOptions, preSets: CoreWSPreSets,
             onProgress?: (event: ProgressEvent) => any): Promise<any> {
-        this.logger.debug(`Trying to upload file: ${filePath}`);
+        this.logger.debug('Trying to upload file: ${filePath}');
 
         if (!filePath || !options || !preSets) {
             return Promise.reject(null);
@@ -796,6 +796,79 @@ export class CoreWSProvider {
         };
 
         return transfer.upload(filePath, uploadUrl, options, true).then((success) => {
+            const data = this.textUtils.parseJSON(success.response, null,
+                    this.logger.error.bind(this.logger, 'Error parsing response from upload'));
+            if (data === null) {
+                return Promise.reject(this.translate.instant('core.errorinvalidresponse'));
+            }
+
+            if (!data) {
+                return Promise.reject(this.translate.instant('core.serverconnection'));
+            } else if (typeof data != 'object') {
+                this.logger.warn('Upload file: Response of type "' + typeof data + '" received, expecting "object"');
+
+                return Promise.reject(this.translate.instant('core.errorinvalidresponse'));
+            }
+
+            if (typeof data.exception !== 'undefined') {
+                return Promise.reject(data.message);
+            } else if (data && typeof data.error !== 'undefined') {
+                return Promise.reject(data.error);
+            } else if (data[0] && typeof data[0].error !== 'undefined') {
+                return Promise.reject(data[0].error);
+            }
+
+            // We uploaded only 1 file, so we only return the first file returned.
+            this.logger.debug('Successfully uploaded file', filePath);
+
+            return data[0];
+        }).catch((error) => {
+            this.logger.error('Error while uploading file', filePath, error);
+
+            return Promise.reject(this.translate.instant('core.errorinvalidresponse'));
+        });
+    }
+
+    /*
+     * Uploads a file.
+     *
+     * @param {string} filePath File path.
+     * @param {CoreWSFileUploadOptions} options File upload options.
+     * @param {CoreWSPreSets} preSets Must contain siteUrl and wsToken.
+     * @param {Function} [onProgress] Function to call on progress.
+     * @return {Promise<any>} Promise resolved when uploaded.
+     */
+    uploadSignupFile(filePath: string, options: CoreWSFileUploadOptions, preSets: any,
+            onProgress?: (event: ProgressEvent) => any, username?: String ): Promise<any> {
+        this.logger.debug('Trying to upload file: ${filePath}');
+
+        if (!filePath || !options || !preSets) {
+            return Promise.reject(null);
+        }
+
+        if (!this.appProvider.isOnline()) {
+            return Promise.reject(this.translate.instant('core.networkerrormsg'));
+        }
+
+        const uploadUrl = preSets.siteUrl + '/webservice/upload_files.php',
+            transfer = this.fileTransfer.create();
+
+        transfer.onProgress(onProgress);
+
+        options.httpMethod = 'POST';
+        options.params = {
+            // token: preSets.wsToken,
+            filearea: options.fileArea || 'draft',
+            itemid: options.itemId || 0,
+            username: username || ''
+        };
+        options.chunkedMode = false;
+        options.headers = {
+            Connection: 'close'
+        };
+
+        return transfer.upload(filePath, uploadUrl, options, true).then((success) => {
+
             const data = this.textUtils.parseJSON(success.response, null,
                     this.logger.error.bind(this.logger, 'Error parsing response from upload'));
             if (data === null) {

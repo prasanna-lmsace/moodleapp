@@ -43,6 +43,22 @@
                     <h2>{{ 'core.user.country' | translate}}</h2>
                     <p>{{ user.country }}</p>
                 </ion-item>
+                
+                <!-- lmsace -->
+                 <ion-item text-wrap *ngIf="file_qualification.url" >
+                    <h2> {{'core.login.qualification' | translate }} </h2>
+                    <p><a href="{{file_qualification.url}}" core-link auto-login="no">
+                        <core-format-text [text]="file_qualification.name"></core-format-text>
+                    </a></p>
+                </ion-item>
+
+                 <ion-item text-wrap *ngIf="file_identification.url" >
+                    <h2> {{'core.login.identification' | translate }} </h2>
+                    <p><a href="{{file_identification.url}}" core-link auto-login="no">
+                        <core-format-text [text]="file_identification.name"></core-format-text>
+                    </a></p>
+                </ion-item>
+
             </ion-item-group>
             <ion-item-group *ngIf="hasDetails">
                 <ion-item-divider>{{ 'core.userdetails' | translate}}</ion-item-divider>

@@ -726,7 +726,7 @@
 "pcurl": {"type":"application/vnd.curl.pcurl"},
 "pcx": {"type":"image/x-pcx"},
 "pdb": {"type":"application/vnd.palm"},
-"pdf": {"type":"application/pdf","icon":"pdf"},
+"pdf": {"type":"application/pdf","icon":"pdf", "groups":["image","document"]},
 "pem": {"type":"application/x-pem-file"},
 "pfa": {"type":"application/x-font-type1"},
 "pfb": {"type":"application/x-font-type1"},

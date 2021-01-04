@@ -334,6 +334,7 @@ export class CoreFileUploaderHelperProvider {
             title: title ? title : this.translate.instant('core.fileuploader.' + (upload ? 'uploadafile' : 'selectafile')),
             buttons: buttons
         });
+        // console.log(title);
         this.actionSheet.present();
 
         // Call afterRender for each button.

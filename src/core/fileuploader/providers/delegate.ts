@@ -141,6 +141,13 @@ export class CoreFileUploaderDelegate extends CoreDelegate {
 
         eventsProvider.on(CoreEventsProvider.LOGOUT, this.clearSiteHandlers.bind(this));
     }
+    /**
+    * Update file handler By lmsace
+    */
+    updateHandler1(handler: CoreDelegateHandler, time: number): Promise<void> {
+        // alert();
+        return super.updateHandler(handler, time);
+    }
 
     /**
      * Clear current site handlers. Reserved for core use.

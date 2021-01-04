@@ -95,5 +95,11 @@
     "usernamerequired": "Username required",
     "usernotaddederror": "User not added - error",
     "visitchangepassword": "Do you want to visit the site to change the password?",
-    "webservicesnotenabled": "Web services are not enabled in your site. Please contact your site administrator if you think they should be enabled."
+    "webservicesnotenabled": "Web services are not enabled in your site. Please contact your site administrator if you think they should be enabled.",
+    "missingqualification": "Qualification file missing",
+    "missingidentification": "Identification file missing",
+    "uploadfile": "Upload File ",
+    "qualification": "Qualification",
+    "identification": "Identification"
+
 }

@@ -1,42 +1,37 @@
 {
   "project_info": {
-    "project_number": "694767596569",
-    "firebase_url": "https://moodlemobile-push.firebaseio.com",
-    "project_id": "moodlemobile-push",
-    "storage_bucket": "moodlemobile-push.appspot.com"
+    "project_number": "221506651961",
+    "firebase_url": "https://hawzam-mobile.firebaseio.com",
+    "project_id": "hawzam-mobile",
+    "storage_bucket": "hawzam-mobile.appspot.com"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:694767596569:android:a4cdad4d168c9d1a",
+        "mobilesdk_app_id": "1:221506651961:android:3eef9efcc5c3baa95e0ae8",
         "android_client_info": {
-          "package_name": "com.moodle.moodlemobile"
+          "package_name": "com.hawzam.online"
         }
       },
       "oauth_client": [
         {
-          "client_id": "694767596569-icveqqa2n56oh44l6ev1dr2oh67nh8il.apps.googleusercontent.com",
+          "client_id": "221506651961-2c2sg12279dnr7753evmqs0h6fumdnlf.apps.googleusercontent.com",
           "client_type": 3
         }
       ],
       "api_key": [
         {
-          "current_key": "AIzaSyCb2zogu0P_aZ2LNgdwzshWExITPKTXJyk"
-        },
-        {
-          "current_key": "AIzaSyDRT1HwT0gSsTty0whOVtoNKAh8SPrJXLE"
+          "current_key": "AIzaSyBN7Hy6ki-bbHaonAV5Uc5_91qx_BeBON8"
         }
       ],
       "services": {
-        "analytics_service": {
-          "status": 1
-        },
         "appinvite_service": {
-          "status": 1,
-          "other_platform_oauth_client": []
-        },
-        "ads_service": {
-          "status": 2
+          "other_platform_oauth_client": [
+            {
+              "client_id": "221506651961-2c2sg12279dnr7753evmqs0h6fumdnlf.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }

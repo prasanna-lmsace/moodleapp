@@ -158,7 +158,7 @@ export class CoreLoginCredentialsPage {
             this.identityProviders = this.loginHelper.getValidIdentityProviders(this.siteConfig);
 
             const disabledFeatures = this.loginHelper.getDisabledFeatures(this.siteConfig);
-            this.canSignup = this.siteConfig.registerauth == 'email' &&
+            this.canSignup = (this.siteConfig.registerauth == 'email' || this.siteConfig.registerauth == 'emailadmin') &&
                     !this.loginHelper.isEmailSignupDisabled(this.siteConfig, disabledFeatures);
             this.showForgottenPassword = !this.loginHelper.isForgottenPasswordDisabled(this.siteConfig, disabledFeatures);
 

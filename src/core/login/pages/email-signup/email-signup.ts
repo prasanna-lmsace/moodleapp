@@ -25,6 +25,9 @@ import { FormBuilder, FormGroup, Validators, FormControl } from '@angular/forms'
 import { CoreUserProfileFieldDelegate } from '@core/user/providers/user-profile-field-delegate';
 import { CoreConfigConstants } from '../../../../configconstants';
 
+import { CoreMimetypeUtilsProvider } from '@providers/utils/mimetype';
+import { CoreFileUploaderHelperProvider } from '@core/fileuploader/providers/helper';
+import { CoreFileUploaderProvider, CoreFileUploaderOptions } from '@core/fileuploader/providers/fileuploader';
 /**
  * Page to signup using email.
  */
@@ -65,11 +68,21 @@ export class CoreLoginEmailSignupPage {
     email2Errors: any;
     policyErrors: any;
     namefieldsErrors: any;
+    // LMSACE CHANGES.
+    canUploadDocuments:boolean;
+    qualification: any = {};
+    identification: any = {}; 
+    siteId: any;
+    qualificationFileErrors: any;
+    identificationFileErrors: any;
+    checked: boolean;
 
     constructor(private navCtrl: NavController, navParams: NavParams, private fb: FormBuilder, private wsProvider: CoreWSProvider,
             private sitesProvider: CoreSitesProvider, private loginHelper: CoreLoginHelperProvider,
             private domUtils: CoreDomUtilsProvider, private translate: TranslateService, private utils: CoreUtilsProvider,
-            private textUtils: CoreTextUtilsProvider, private userProfileFieldDelegate: CoreUserProfileFieldDelegate) {
+            private textUtils: CoreTextUtilsProvider, private userProfileFieldDelegate: CoreUserProfileFieldDelegate, 
+            private fileUploaderHelper: CoreFileUploaderHelperProvider, private mimetypeUtils: CoreMimetypeUtilsProvider, 
+            private fileUploaderProvider: CoreFileUploaderProvider) {
 
         this.siteUrl = navParams.get('siteUrl');
 
@@ -80,12 +93,15 @@ export class CoreLoginEmailSignupPage {
         this.countryControl = this.fb.control('', Validators.required);
         this.ageVerificationForm.addControl('country', this.countryControl);
 
+
         // Create the signupForm with the basic controls. More controls will be added later.
         this.signupForm = this.fb.group({
             username: ['', Validators.required],
             password: ['', Validators.required],
             email: ['', Validators.compose([Validators.required, Validators.email])],
-            email2: ['', Validators.compose([Validators.required, Validators.email])]
+            email2: ['', Validators.compose([Validators.required, Validators.email])],
+            qualificationFile: ['', Validators.required],
+            identificationFile: ['', Validators.required]
         });
 
         // Setup validation errors.
@@ -94,6 +110,17 @@ export class CoreLoginEmailSignupPage {
         this.emailErrors = this.loginHelper.getErrorMessages('core.login.missingemail');
         this.email2Errors = this.loginHelper.getErrorMessages('core.login.missingemail', undefined, 'core.login.emailnotmatch');
         this.policyErrors = this.loginHelper.getErrorMessages('core.login.policyagree');
+        this.qualificationFileErrors = this.loginHelper.getErrorMessages('core.login.missingqualification');
+        this.identificationFileErrors = this.loginHelper.getErrorMessages('core.login.missingidentification');
+
+        
+       // LMSACE CHANGES
+        this.siteId = this.sitesProvider.createSiteID(this.siteUrl, 'admin');
+        this.canUploadDocuments = true;
+        this.qualification.name = '';
+        this.identification.name = '';
+        this.checked = false;
+
     }
 
     /**
@@ -121,6 +148,63 @@ export class CoreLoginEmailSignupPage {
 
         if (this.settings.sitepolicy) {
             this.signupForm.addControl('policyagreed', this.fb.control(false, Validators.requiredTrue));
+        }
+
+        // this.signupForm.addControl('qualification', this.fb.control('', Validators.required));
+    }
+
+    /* HAWZAM file upload on signup */
+    uploadQualification(): void {
+        const maxSize = -1,
+            title = this.translate.instant('core.login.qualification'),
+            mimetypes = this.mimetypeUtils.getGroupMimeInfo('document', 'mimetypes');
+            // console.log(mimetypes);
+         this.fileUploaderHelper.selectFile(maxSize, true, title, mimetypes).then((result) => {
+            
+            this.qualification = result;
+            return this.qualification;
+        }).catch((message) => {
+            if (message) {
+                this.domUtils.showErrorModal(message);
+            }
+            return message;
+        });
+        return this.qualification;
+    }
+
+    uploadIdentification(): void {
+        const maxSize = -1,
+            title = this.translate.instant('core.login.identification'),
+            mimetypes = this.mimetypeUtils.getGroupMimeInfo('document', 'mimetypes');
+            // console.log(title);
+         this.fileUploaderHelper.selectFile(maxSize, true, title, mimetypes).then((result) => {
+            // console.log(result);
+            this.identification = result;
+            return this.identification;
+        }).catch((message) => {
+            if (message) {
+                this.domUtils.showErrorModal(message);
+            }
+            return message;
+        });
+        return this.identification;
+    }
+
+    uploadSelectDocuments(username: any, documentFile: any, filearea: string ): void {
+        if (documentFile != '') {
+            const maxSize = -1;
+
+            this.fileUploaderHelper.uploadFileEntry(documentFile, true, maxSize, false, true ).then((file) => {
+                
+                const options = this.fileUploaderProvider.getFileUploadOptions(documentFile.toURL(), file.name, file.type, true);
+                // console.log(this.siteUrl);
+               
+                options.fileArea = filearea;
+                let ftOptions = this.utils.clone(options);
+                // ftOptions.username = username;
+                return this.wsProvider.uploadSignupFile(file.toURL(), ftOptions, {siteUrl: this.siteUrl}, null, username);
+            });
+            
         }
     }
 
@@ -159,7 +243,7 @@ export class CoreLoginEmailSignupPage {
      * Get signup settings from server.
      */
     protected getSignupSettings(): Promise<any> {
-        return this.wsProvider.callAjax('auth_email_get_signup_settings', {}, { siteUrl: this.siteUrl }).then((settings) => {
+        return this.wsProvider.callAjax('auth_emailadmin_get_signup_settings', {}, { siteUrl: this.siteUrl }).then((settings) => {
             this.settings = settings;
             this.categories = this.loginHelper.formatProfileFieldsForSignup(settings.profilefields);
 
@@ -178,6 +262,8 @@ export class CoreLoginEmailSignupPage {
                 });
             }
 
+            // this.qualification.name = '';
+
             return this.utils.getCountryListSorted().then((countries) => {
                 this.countries = countries;
             });
@@ -191,7 +277,7 @@ export class CoreLoginEmailSignupPage {
      * @return True if success.
      */
     protected treatSiteConfig(siteConfig: any): boolean {
-        if (siteConfig && siteConfig.registerauth == 'email' && !this.loginHelper.isEmailSignupDisabled(siteConfig)) {
+        if (siteConfig && ( siteConfig.registerauth == 'email' || siteConfig.registerauth == 'emailadmin') && !this.loginHelper.isEmailSignupDisabled(siteConfig)) {
             this.siteName = CoreConfigConstants.sitename ? CoreConfigConstants.sitename : siteConfig.sitename;
             this.authInstructions = siteConfig.authinstructions;
             this.ageDigitalConsentVerification = siteConfig.agedigitalconsentverification;
@@ -228,6 +314,15 @@ export class CoreLoginEmailSignupPage {
     create(e: Event): void {
         e.preventDefault();
         e.stopPropagation();
+      
+        this.checked = true;
+
+        if (this.signupForm.controls.qualificationFile.valid) {
+            this.signupForm.controls.qualificationFile.markAsTouched();
+        }
+        if (this.signupForm.controls.identificationFile.valid) {
+            this.signupForm.controls.identificationFile.markAsTouched();
+        }
 
         if (!this.signupForm.valid || (this.settings.recaptchapublickey && !this.captcha.recaptcharesponse)) {
             // Form not valid. Scroll to the first element with errors.
@@ -262,9 +357,13 @@ export class CoreLoginEmailSignupPage {
                 (fieldsData) => {
                     params.customprofilefields = fieldsData;
 
-                    return this.wsProvider.callAjax('auth_email_signup_user', params, { siteUrl: this.siteUrl });
+                    return this.wsProvider.callAjax('auth_emailadmin_signup_user', params, { siteUrl: this.siteUrl });
                 }).then((result) => {
                     if (result.success) {
+                        // LMSACE CHANGES
+                        this.uploadSelectDocuments(params.username, this.qualification, 'file_qualification');
+                        this.uploadSelectDocuments(params.username, this.identification, 'file_identification');
+                    
                         // Show alert and ho back.
                         const message = this.translate.instant('core.login.emailconfirmsent', { $a: params.email });
                         this.domUtils.showAlert(this.translate.instant('core.success'), message);
