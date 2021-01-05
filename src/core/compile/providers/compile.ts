@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Injectable, Injector, Component, NgModule, Compiler, ComponentFactory, ComponentRef, NgModuleRef } from '@angular/core';
+import {
+    Injectable, Injector, Component, NgModule, Compiler, ComponentFactory, ComponentRef, NgModuleRef, NO_ERRORS_SCHEMA
+} from '@angular/core';
 import { JitCompilerFactory } from '@angular/platform-browser-dynamic';
 import {
     Platform, ActionSheetController, AlertController, LoadingController, ModalController, PopoverController, ToastController,
@@ -39,6 +41,9 @@ import { CORE_SITEHOME_PROVIDERS } from '@core/sitehome/sitehome.module';
 import { CORE_USER_PROVIDERS } from '@core/user/user.module';
 import { CORE_PUSHNOTIFICATIONS_PROVIDERS } from '@core/pushnotifications/pushnotifications.module';
 import { IONIC_NATIVE_PROVIDERS } from '@core/emulator/emulator.module';
+import { CORE_EDITOR_PROVIDERS } from '@core/editor/editor.module';
+import { CORE_SEARCH_PROVIDERS } from '@core/search/search.module';
+import { CORE_XAPI_PROVIDERS } from '@core/xapi/xapi.module';
 
 // Import only this provider to prevent circular dependencies.
 import { CoreSitePluginsProvider } from '@core/siteplugins/providers/siteplugins';
@@ -46,7 +51,6 @@ import { CoreSitePluginsProvider } from '@core/siteplugins/providers/siteplugins
 // Import other libraries and providers.
 import { DomSanitizer } from '@angular/platform-browser';
 import { FormBuilder, Validators } from '@angular/forms';
-import { Http } from '@angular/http';
 import { HttpClient } from '@angular/common/http';
 import { CoreConfigConstants } from '../../../configconstants';
 import { CoreConstants } from '@core/constants';
@@ -55,6 +59,9 @@ import { Md5 } from 'ts-md5/dist/md5';
 
 // Import core classes that can be useful for site plugins.
 import { CoreSyncBaseProvider } from '@classes/base-sync';
+import { CoreArray } from '@singletons/array';
+import { CoreUrl } from '@singletons/url';
+import { CoreWindow } from '@singletons/window';
 import { CoreCache } from '@classes/cache';
 import { CoreDelegate } from '@classes/delegate';
 import { CoreContentLinksHandlerBase } from '@core/contentlinks/classes/base-handler';
@@ -62,6 +69,7 @@ import { CoreContentLinksModuleGradeHandler } from '@core/contentlinks/classes/m
 import { CoreContentLinksModuleIndexHandler } from '@core/contentlinks/classes/module-index-handler';
 import { CoreCourseActivityPrefetchHandlerBase } from '@core/course/classes/activity-prefetch-handler';
 import { CoreCourseResourcePrefetchHandlerBase } from '@core/course/classes/resource-prefetch-handler';
+import { CoreGeolocationError, CoreGeolocationErrorReason } from '@providers/geolocation';
 
 // Import all core modules that define components, directives and pipes.
 import { CoreComponentsModule } from '@components/components.module';
@@ -75,6 +83,8 @@ import { CoreSiteHomeComponentsModule } from '@core/sitehome/components/componen
 import { CoreUserComponentsModule } from '@core/user/components/components.module';
 import { CoreQuestionComponentsModule } from '@core/question/components/components.module';
 import { CoreBlockComponentsModule } from '@core/block/components/components.module';
+import { CoreEditorComponentsModule } from '@core/editor/components/components.module';
+import { CoreSearchComponentsModule } from '@core/search/components/components.module';
 
 // Import some components listed in entryComponents so they can be injected dynamically.
 import { CoreCourseUnsupportedModuleComponent } from '@core/course/components/unsupported-module/unsupported-module';
@@ -105,6 +115,7 @@ import { ADDON_MOD_FEEDBACK_PROVIDERS } from '@addon/mod/feedback/feedback.modul
 import { ADDON_MOD_FOLDER_PROVIDERS } from '@addon/mod/folder/folder.module';
 import { ADDON_MOD_FORUM_PROVIDERS } from '@addon/mod/forum/forum.module';
 import { ADDON_MOD_GLOSSARY_PROVIDERS } from '@addon/mod/glossary/glossary.module';
+import { ADDON_MOD_H5P_ACTIVITY_PROVIDERS } from '@addon/mod/h5pactivity/h5pactivity.module';
 import { ADDON_MOD_IMSCP_PROVIDERS } from '@addon/mod/imscp/imscp.module';
 import { ADDON_MOD_LESSON_PROVIDERS } from '@addon/mod/lesson/lesson.module';
 import { ADDON_MOD_LTI_PROVIDERS } from '@addon/mod/lti/lti.module';
@@ -135,7 +146,7 @@ export class CoreCompileProvider {
 
     // Other Ionic/Angular providers that don't depend on where they are injected.
     protected OTHER_PROVIDERS = [
-        TranslateService, Http, HttpClient, Platform, DomSanitizer, ActionSheetController, AlertController, LoadingController,
+        TranslateService, HttpClient, Platform, DomSanitizer, ActionSheetController, AlertController, LoadingController,
         ModalController, PopoverController, ToastController, FormBuilder
     ];
 
@@ -144,7 +155,7 @@ export class CoreCompileProvider {
         IonicModule, TranslateModule.forChild(), CoreComponentsModule, CoreDirectivesModule, CorePipesModule,
         CoreCourseComponentsModule, CoreCoursesComponentsModule, CoreSiteHomeComponentsModule, CoreUserComponentsModule,
         CoreCourseDirectivesModule, CoreSitePluginsDirectivesModule, CoreQuestionComponentsModule, AddonModAssignComponentsModule,
-        AddonModWorkshopComponentsModule, CoreBlockComponentsModule
+        AddonModWorkshopComponentsModule, CoreBlockComponentsModule, CoreEditorComponentsModule, CoreSearchComponentsModule
     ];
 
     constructor(protected injector: Injector, logger: CoreLoggerProvider, compilerFactory: JitCompilerFactory) {
@@ -171,7 +182,7 @@ export class CoreCompileProvider {
         const imports = this.IMPORTS.concat(extraImports);
 
         // Now create the module containing the component.
-        const module = NgModule({imports: imports, declarations: [component]})(class {});
+        const module = NgModule({imports: imports, declarations: [component], schemas: [NO_ERRORS_SCHEMA]})(class {});
 
         try {
             // Compile the module and the component.
@@ -185,6 +196,9 @@ export class CoreCompileProvider {
                 }
             });
         } catch (ex) {
+            this.logger.error('Error compiling template', template);
+            this.logger.error(ex);
+
             return Promise.reject({message: 'Template has some errors and cannot be displayed.', debuginfo: ex});
         }
     }
@@ -237,7 +251,8 @@ export class CoreCompileProvider {
                 .concat(ADDON_MOD_SURVEY_PROVIDERS).concat(ADDON_MOD_URL_PROVIDERS).concat(ADDON_MOD_WIKI_PROVIDERS)
                 .concat(ADDON_MOD_WORKSHOP_PROVIDERS).concat(ADDON_NOTES_PROVIDERS).concat(ADDON_NOTIFICATIONS_PROVIDERS)
                 .concat(CORE_PUSHNOTIFICATIONS_PROVIDERS).concat(ADDON_REMOTETHEMES_PROVIDERS).concat(CORE_BLOCK_PROVIDERS)
-                .concat(CORE_FILTER_PROVIDERS).concat(CORE_H5P_PROVIDERS);
+                .concat(CORE_FILTER_PROVIDERS).concat(CORE_H5P_PROVIDERS).concat(CORE_EDITOR_PROVIDERS)
+                .concat(CORE_SEARCH_PROVIDERS).concat(ADDON_MOD_H5P_ACTIVITY_PROVIDERS).concat(CORE_XAPI_PROVIDERS);
 
         // We cannot inject anything to this constructor. Use the Injector to inject all the providers into the instance.
         for (const i in providers) {
@@ -263,6 +278,9 @@ export class CoreCompileProvider {
         instance['moment'] = moment;
         instance['Md5'] = Md5;
         instance['CoreSyncBaseProvider'] = CoreSyncBaseProvider;
+        instance['CoreArray'] = CoreArray;
+        instance['CoreUrl'] = CoreUrl;
+        instance['CoreWindow'] = CoreWindow;
         instance['CoreCache'] = CoreCache;
         instance['CoreDelegate'] = CoreDelegate;
         instance['CoreContentLinksHandlerBase'] = CoreContentLinksHandlerBase;
@@ -282,6 +300,8 @@ export class CoreCompileProvider {
         instance['CoreSitePluginsQuizAccessRuleComponent'] = CoreSitePluginsQuizAccessRuleComponent;
         instance['CoreSitePluginsAssignFeedbackComponent'] = CoreSitePluginsAssignFeedbackComponent;
         instance['CoreSitePluginsAssignSubmissionComponent'] = CoreSitePluginsAssignSubmissionComponent;
+        instance['CoreGeolocationError'] = CoreGeolocationError;
+        instance['CoreGeolocationErrorReason'] = CoreGeolocationErrorReason;
     }
 
     /**

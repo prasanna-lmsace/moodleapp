@@ -20,6 +20,7 @@ import { CoreFileHelperProvider } from '@providers/file-helper';
 import { CoreSitesProvider } from '@providers/sites';
 import { CoreDomUtilsProvider } from '@providers/utils/dom';
 import { CoreMimetypeUtilsProvider } from '@providers/utils/mimetype';
+import { CoreUrlUtilsProvider } from '@providers/utils/url';
 import { CoreUtilsProvider } from '@providers/utils/utils';
 import { CoreTextUtilsProvider } from '@providers/utils/text';
 import { CoreConstants } from '@core/constants';
@@ -57,16 +58,17 @@ export class CoreFileComponent implements OnInit, OnDestroy {
     protected timemodified: number;
     protected observer;
 
-    constructor(private sitesProvider: CoreSitesProvider,
-            private utils: CoreUtilsProvider,
-            private domUtils: CoreDomUtilsProvider,
-            private filepoolProvider: CoreFilepoolProvider,
-            private appProvider: CoreAppProvider,
-            private fileHelper: CoreFileHelperProvider,
-            private mimeUtils: CoreMimetypeUtilsProvider,
-            private eventsProvider: CoreEventsProvider,
-            private textUtils: CoreTextUtilsProvider,
-            private pluginFileDelegate: CorePluginFileDelegate) {
+    constructor(protected sitesProvider: CoreSitesProvider,
+            protected utils: CoreUtilsProvider,
+            protected domUtils: CoreDomUtilsProvider,
+            protected filepoolProvider: CoreFilepoolProvider,
+            protected appProvider: CoreAppProvider,
+            protected fileHelper: CoreFileHelperProvider,
+            protected mimeUtils: CoreMimetypeUtilsProvider,
+            protected eventsProvider: CoreEventsProvider,
+            protected textUtils: CoreTextUtilsProvider,
+            protected pluginFileDelegate: CorePluginFileDelegate,
+            protected urlUtils: CoreUrlUtilsProvider) {
         this.onDelete = new EventEmitter();
     }
 
@@ -104,6 +106,8 @@ export class CoreFileComponent implements OnInit, OnDestroy {
                 this.observer = this.eventsProvider.on(eventName, () => {
                     this.calculateState();
                 });
+            }).catch(() => {
+                // File not downloadable.
             });
         }
     }
@@ -144,7 +148,7 @@ export class CoreFileComponent implements OnInit, OnDestroy {
      * @param e Click event.
      * @param openAfterDownload Whether the file should be opened after download.
      */
-    download(e?: Event, openAfterDownload: boolean = false): void {
+    async download(e?: Event, openAfterDownload: boolean = false): Promise<void> {
         e && e.preventDefault();
         e && e.stopPropagation();
 
@@ -152,16 +156,16 @@ export class CoreFileComponent implements OnInit, OnDestroy {
             return;
         }
 
-        if (!this.canDownload) {
+        if (!this.canDownload || !this.state || this.state == CoreConstants.NOT_DOWNLOADABLE) {
             // File cannot be downloaded, just open it.
             if (this.file.toURL) {
                 // Local file.
                 this.utils.openFile(this.file.toURL());
             } else if (this.fileUrl) {
-                if (this.fileUrl.indexOf('http') === 0) {
-                    this.utils.openOnlineFile(this.fileUrl);
-                } else {
+                if (this.urlUtils.isLocalFileUrl(this.fileUrl)) {
                     this.utils.openFile(this.fileUrl);
+                } else {
+                    this.utils.openOnlineFile(this.urlUtils.unfixPluginfileURL(this.fileUrl));
                 }
             }
 
@@ -177,32 +181,45 @@ export class CoreFileComponent implements OnInit, OnDestroy {
 
         if (openAfterDownload) {
             // File needs to be opened now.
-            this.openFile().catch((error) => {
+            try {
+                await this.openFile();
+            } catch (error) {
                 this.domUtils.showErrorModalDefault(error, 'core.errordownloading', true);
-            });
+            }
         } else {
-            // File doesn't need to be opened (it's a prefetch). Show confirm modal if file size is defined and it's big.
-            this.pluginFileDelegate.getFileSize({fileurl: this.fileUrl, filesize: this.fileSize}, this.siteId).then((size) => {
+            // File doesn't need to be opened (it's a prefetch).
+            if (!this.fileHelper.isOpenableInApp(this.file)) {
+                try {
+                    await this.fileHelper.showConfirmOpenUnsupportedFile(true);
+                } catch (error) {
+                    return; // Cancelled, stop.
+                }
+            }
 
-                const promise = size ? this.domUtils.confirmDownloadSize({ size: size, total: true }) : Promise.resolve();
+            try {
+                // Show confirm modal if file size is defined and it's big.
+                const size = await this.pluginFileDelegate.getFileSize({fileurl: this.fileUrl, filesize: this.fileSize},
+                        this.siteId);
 
-                return promise.then(() => {
-                    // User confirmed, add the file to queue.
-                    return this.filepoolProvider.invalidateFileByUrl(this.siteId, this.fileUrl).finally(() => {
-                        this.isDownloading = true;
+                if (size) {
+                    await this.domUtils.confirmDownloadSize({ size: size, total: true });
+                }
 
-                        this.filepoolProvider.addToQueueByUrl(this.siteId, this.fileUrl, this.component,
-                            this.componentId, this.timemodified, undefined, undefined, 0, this.file).catch((error) => {
-                                this.domUtils.showErrorModalDefault(error, 'core.errordownloading', true);
-                                this.calculateState();
-                            });
-                    });
-                }).catch(() => {
-                    // User cancelled.
-                });
-            }).catch((error) => {
+                // User confirmed, add the file to queue.
+                await this.utils.ignoreErrors(this.filepoolProvider.invalidateFileByUrl(this.siteId, this.fileUrl));
+
+                this.isDownloading = true;
+
+                try {
+                    await this.filepoolProvider.addToQueueByUrl(this.siteId, this.fileUrl, this.component,
+                            this.componentId, this.timemodified, undefined, undefined, 0, this.file);
+                } catch (error) {
+                    this.domUtils.showErrorModalDefault(error, 'core.errordownloading', true);
+                    this.calculateState();
+                }
+            } catch (error) {
                 this.domUtils.showErrorModalDefault(error, 'core.errordownloading', true);
-            });
+            }
         }
     }
 

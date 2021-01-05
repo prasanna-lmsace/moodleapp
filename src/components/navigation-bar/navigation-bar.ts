@@ -30,7 +30,9 @@ import { CoreTextUtilsProvider } from '@providers/utils/text';
 })
 export class CoreNavigationBarComponent {
     @Input() previous?: any; // Previous item. If not defined, the previous arrow won't be shown.
+    @Input() previousTitle?: string; // Previous item title. If not defined, only the arrow will be shown.
     @Input() next?: any; // Next item. If not defined, the next arrow won't be shown.
+    @Input() nextTitle?: string; // Next item title. If not defined, only the arrow will be shown.
     @Input() info?: string; // Info to show when clicking the info button. If not defined, the info button won't be shown.
     @Input() title?: string; // Title to show when seeing the info (new page).
     @Input() component?: string; // Component the bar belongs to.
@@ -45,7 +47,13 @@ export class CoreNavigationBarComponent {
     }
 
     showInfo(): void {
-        this.textUtils.expandText(this.title, this.info, this.component, this.componentId, [], true, this.contextLevel,
-                this.contextInstanceId, this.courseId);
+        this.textUtils.viewText(this.title, this.info, {
+            component: this.component,
+            componentId: this.componentId,
+            filter: true,
+            contextLevel: this.contextLevel,
+            instanceId: this.contextInstanceId,
+            courseId: this.courseId,
+        });
     }
 }

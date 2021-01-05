@@ -13,13 +13,12 @@
 // limitations under the License.
 
 import { Component, Injector } from '@angular/core';
-import { CoreAppProvider } from '@providers/app';
 import { CoreUtilsProvider } from '@providers/utils/utils';
-import { CoreCourseProvider } from '@core/course/providers/course';
-import { CoreCourseModuleMainResourceComponent } from '@core/course/classes/main-resource-component';
+import {
+    CoreCourseModuleMainResourceComponent, CoreCourseResourceDownloadResult
+} from '@core/course/classes/main-resource-component';
 import { AddonModPageProvider, AddonModPagePage } from '../../providers/page';
 import { AddonModPageHelperProvider } from '../../providers/helper';
-import { AddonModPagePrefetchHandler } from '../../providers/prefetch-handler';
 
 /**
  * Component that displays a page.
@@ -35,12 +34,14 @@ export class AddonModPageIndexComponent extends CoreCourseModuleMainResourceComp
     displayDescription = true;
     displayTimemodified = true;
     page: AddonModPagePage;
+    warning: string;
 
     protected fetchContentDefaultError = 'addon.mod_page.errorwhileloadingthepage';
 
-    constructor(injector: Injector, private pageProvider: AddonModPageProvider, private courseProvider: CoreCourseProvider,
-            private appProvider: CoreAppProvider, private pageHelper: AddonModPageHelperProvider,
-            private pagePrefetch: AddonModPagePrefetchHandler, private utils: CoreUtilsProvider) {
+    constructor(injector: Injector,
+            protected pageProvider: AddonModPageProvider,
+            protected pageHelper: AddonModPageHelperProvider,
+            protected utils: CoreUtilsProvider) {
         super(injector);
     }
 
@@ -77,17 +78,11 @@ export class AddonModPageIndexComponent extends CoreCourseModuleMainResourceComp
      * @return Promise resolved when done.
      */
     protected fetchContent(refresh?: boolean): Promise<any> {
-        let downloadFailed = false;
+        let downloadResult: CoreCourseResourceDownloadResult;
 
-        // Download content. This function also loads module contents if needed.
-        return this.pagePrefetch.download(this.module, this.courseId).catch(() => {
-            // Mark download as failed but go on since the main files could have been downloaded.
-            downloadFailed = true;
-        }).then(() => {
-            if (!this.module.contents.length) {
-                // Try to load module contents for offline usage.
-                return this.courseProvider.loadModuleContents(this.module, this.courseId);
-            }
+        // Download the resource if it needs to be downloaded.
+        return this.downloadResourceIfNeeded(refresh).then((result) => {
+            downloadResult = result;
         }).then(() => {
             const promises = [];
 
@@ -129,11 +124,7 @@ export class AddonModPageIndexComponent extends CoreCourseModuleMainResourceComp
             promises.push(this.pageHelper.getPageHtml(this.module.contents, this.module.id).then((content) => {
 
                 this.contents = content;
-
-                if (downloadFailed && this.appProvider.isOnline()) {
-                    // We could load the main file but the download failed. Show error message.
-                    this.domUtils.showErrorModal('core.errordownloadingsomefiles', true);
-                }
+                this.warning = downloadResult.failed ? this.getErrorDownloadingSomeFilesMessage(downloadResult.error) : '';
             }));
 
             return Promise.all(promises);

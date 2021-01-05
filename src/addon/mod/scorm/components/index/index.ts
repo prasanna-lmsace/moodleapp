@@ -37,12 +37,7 @@ export class AddonModScormIndexComponent extends CoreCourseModuleMainActivityCom
 
     scorm: any; // The SCORM object.
     currentOrganization: any = {}; // Selected organization.
-    scormOptions: any = { // Options to open the SCORM.
-        mode: AddonModScormProvider.MODENORMAL,
-        newAttempt: false
-    };
-    modeNormal = AddonModScormProvider.MODENORMAL; // Normal open mode.
-    modeBrowser = AddonModScormProvider.MODEBROWSE; // Browser open mode.
+    startNewAttempt = false;
     errorMessage: string; // Error message.
     syncTime: string; // Last sync time.
     hasOffline: boolean; // Whether the SCORM has offline data.
@@ -151,7 +146,7 @@ export class AddonModScormIndexComponent extends CoreCourseModuleMainActivityCom
     protected fetchContent(refresh: boolean = false, sync: boolean = false, showErrors: boolean = false): Promise<any> {
 
         // Get the SCORM instance.
-        return this.scormProvider.getScorm(this.courseId, this.module.id, this.module.url).then((scormData) => {
+        return this.scormProvider.getScorm(this.courseId, this.module.id, {moduleUrl: this.module.url}).then((scormData) => {
             this.scorm = scormData;
 
             this.dataRetrieved.emit(this.scorm);
@@ -190,12 +185,12 @@ export class AddonModScormIndexComponent extends CoreCourseModuleMainActivityCom
                 const promises = [];
 
                 // Get access information.
-                promises.push(this.scormProvider.getAccessInformation(this.scorm.id).then((accessInfo) => {
+                promises.push(this.scormProvider.getAccessInformation(this.scorm.id, {cmId: this.module.id}).then((accessInfo) => {
                     this.accessInfo = accessInfo;
                 }));
 
                 // Get the number of attempts.
-                promises.push(this.scormProvider.getAttemptCount(this.scorm.id).then((attemptsData) => {
+                promises.push(this.scormProvider.getAttemptCount(this.scorm.id, {cmId: this.module.id}).then((attemptsData) => {
                     this.attempts = attemptsData;
                     this.hasOffline = !!this.attempts.offline.length;
 
@@ -212,7 +207,10 @@ export class AddonModScormIndexComponent extends CoreCourseModuleMainActivityCom
                     }
 
                     // Check if the last attempt is incomplete.
-                    return this.scormProvider.isAttemptIncomplete(this.scorm.id, this.lastAttempt, this.lastIsOffline);
+                    return this.scormProvider.isAttemptIncomplete(this.scorm.id, this.lastAttempt, {
+                        offline: this.lastIsOffline,
+                        cmId: this.module.id,
+                    });
                 }).then((incomplete) => {
                     const promises = [];
 
@@ -223,7 +221,7 @@ export class AddonModScormIndexComponent extends CoreCourseModuleMainActivityCom
 
                     if (this.scorm.forcenewattempt == AddonModScormProvider.SCORM_FORCEATTEMPT_ALWAYS ||
                             (this.scorm.forcenewattempt && !this.scorm.incomplete)) {
-                        this.scormOptions.newAttempt = true;
+                        this.startNewAttempt = true;
                     }
 
                     promises.push(this.getReportedGrades());
@@ -265,7 +263,7 @@ export class AddonModScormIndexComponent extends CoreCourseModuleMainActivityCom
      * @return Promise resolved when done.
      */
     protected fetchStructure(): Promise<any> {
-        return this.scormProvider.getOrganizations(this.scorm.id).then((organizations) => {
+        return this.scormProvider.getOrganizations(this.scorm.id, {cmId: this.module.id}).then((organizations) => {
             this.organizations = organizations;
 
             if (!this.currentOrganization.identifier) {
@@ -372,7 +370,7 @@ export class AddonModScormIndexComponent extends CoreCourseModuleMainActivityCom
 
         if (this.hasPlayed) {
             this.hasPlayed = false;
-            this.scormOptions.newAttempt = false; // Uncheck new attempt.
+            this.startNewAttempt = false; // Uncheck new attempt.
 
             // Add a delay to make sure the player has started the last writing calls so we can detect conflicts.
             setTimeout(() => {
@@ -465,8 +463,11 @@ export class AddonModScormIndexComponent extends CoreCourseModuleMainActivityCom
 
         this.loadingToc = true;
 
-        return this.scormProvider.getOrganizationToc(this.scorm.id, this.lastAttempt, organizationId, this.lastIsOffline)
-                .then((toc) => {
+        return this.scormProvider.getOrganizationToc(this.scorm.id, this.lastAttempt, {
+            organization: organizationId,
+            offline: this.lastIsOffline,
+            cmId: this.module.id,
+        }).then((toc) => {
 
             this.toc = this.scormProvider.formatTocToArray(toc);
 
@@ -492,7 +493,7 @@ export class AddonModScormIndexComponent extends CoreCourseModuleMainActivityCom
      * @param event Event.
      * @param scoId SCO that needs to be loaded when the SCORM is opened. If not defined, load first SCO.
      */
-    open(event?: Event, scoId?: number): void {
+    open(event?: Event, preview: boolean = false, scoId?: number): void {
         if (event) {
             event.preventDefault();
             event.stopPropagation();
@@ -515,7 +516,7 @@ export class AddonModScormIndexComponent extends CoreCourseModuleMainActivityCom
                     this.downloadScormPackage().then(() => {
                         // Success downloading, open SCORM if user hasn't left the view.
                         if (!this.isDestroyed) {
-                            this.openScorm(scoId);
+                            this.openScorm(scoId, preview);
                         }
                     }).catch((error) => {
                         if (!this.isDestroyed) {
@@ -526,7 +527,7 @@ export class AddonModScormIndexComponent extends CoreCourseModuleMainActivityCom
                 });
             });
         } else {
-            this.openScorm(scoId);
+            this.openScorm(scoId, preview);
         }
     }
 
@@ -535,11 +536,11 @@ export class AddonModScormIndexComponent extends CoreCourseModuleMainActivityCom
      *
      * @param scoId SCO ID.
      */
-    protected openScorm(scoId: number): void {
+    protected openScorm(scoId: number, preview: boolean = false): void {
         this.navCtrl.push('AddonModScormPlayerPage', {
             scorm: this.scorm,
-            mode: this.scormOptions.mode,
-            newAttempt: !!this.scormOptions.newAttempt,
+            mode: preview ? AddonModScormProvider.MODEBROWSE : AddonModScormProvider.MODENORMAL,
+            newAttempt: !!this.startNewAttempt,
             organizationId: this.currentOrganization.identifier,
             scoId: scoId
         });

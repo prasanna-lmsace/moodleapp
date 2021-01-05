@@ -20,6 +20,7 @@ import { AddonModResourceProvider } from './resource';
 import { CoreSitesProvider } from '@providers/sites';
 import { CoreFilepoolProvider } from '@providers/filepool';
 import { CoreFileProvider } from '@providers/file';
+import { CoreFileHelperProvider } from '@providers/file-helper';
 import { CoreAppProvider } from '@providers/app';
 import { CoreMimetypeUtilsProvider } from '@providers/utils/mimetype';
 import { CoreTextUtilsProvider } from '@providers/utils/text';
@@ -36,11 +37,17 @@ export class AddonModResourceHelperProvider {
     // Display using object tag.
     protected DISPLAY_EMBED = 1;
 
-    constructor(private courseProvider: CoreCourseProvider, private domUtils: CoreDomUtilsProvider,
-            private resourceProvider: AddonModResourceProvider, private courseHelper: CoreCourseHelperProvider,
-            private textUtils: CoreTextUtilsProvider, private mimetypeUtils: CoreMimetypeUtilsProvider,
-            private fileProvider: CoreFileProvider, private appProvider: CoreAppProvider,
-            private filepoolProvider: CoreFilepoolProvider, private sitesProvider: CoreSitesProvider) {
+    constructor(protected courseProvider: CoreCourseProvider,
+            protected domUtils: CoreDomUtilsProvider,
+            protected resourceProvider: AddonModResourceProvider,
+            protected courseHelper: CoreCourseHelperProvider,
+            protected textUtils: CoreTextUtilsProvider,
+            protected mimetypeUtils: CoreMimetypeUtilsProvider,
+            protected fileProvider: CoreFileProvider,
+            protected appProvider: CoreAppProvider,
+            protected filepoolProvider: CoreFilepoolProvider,
+            protected sitesProvider: CoreSitesProvider,
+            protected fileHelper: CoreFileHelperProvider) {
     }
 
     /**
@@ -97,8 +104,10 @@ export class AddonModResourceHelperProvider {
      * @return Whether the resource should be displayed embeded.
      */
     isDisplayedEmbedded(module: any, display: number): boolean {
+        const currentSite = this.sitesProvider.getCurrentSite();
+
         if ((!module.contents.length && !module.contentsinfo) || !this.fileProvider.isAvailable() ||
-                (!this.sitesProvider.getCurrentSite().isVersionGreaterEqualThan('3.7') && this.isNextcloudFile(module))) {
+                (currentSite && !currentSite.isVersionGreaterEqualThan('3.7') && this.isNextcloudFile(module))) {
             return false;
         }
 
@@ -133,7 +142,24 @@ export class AddonModResourceHelperProvider {
             mimetype = this.mimetypeUtils.getMimeType(ext);
         }
 
-        return mimetype == 'text/html';
+        return mimetype == 'text/html' || mimetype == 'application/xhtml+xml';
+    }
+
+    /**
+     * Check if main file of resource is downloadable.
+     *
+     * @param module Module instance.
+     * @param siteId Site ID. If not defined, current site.
+     * @return Promise resolved with boolean: whether main file is downloadable.
+     */
+    isMainFileDownloadable(module: any, siteId?: string): Promise<boolean> {
+        siteId = siteId || this.sitesProvider.getCurrentSiteId();
+
+        const mainFile = module.contents[0];
+        const fileUrl = this.fileHelper.getFileUrl(mainFile);
+        const timemodified = this.fileHelper.getFileTimemodified(mainFile);
+
+        return this.filepoolProvider.isFileDownloadable(siteId, fileUrl, timemodified);
     }
 
     /**

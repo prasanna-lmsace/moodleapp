@@ -14,12 +14,13 @@
 
 import { Injectable, NgZone } from '@angular/core';
 import { Network } from '@ionic-native/network';
-import { CoreAppProvider } from './app';
+import { CoreAppProvider, CoreAppSchema } from './app';
 import { CoreConfigProvider } from './config';
 import { CoreLoggerProvider } from './logger';
 import { CoreUtilsProvider } from './utils/utils';
 import { CoreConstants } from '@core/constants';
-import { SQLiteDB, SQLiteDBTableSchema } from '@classes/sqlitedb';
+import { SQLiteDB } from '@classes/sqlitedb';
+import { makeSingleton } from '@singletons/core.singletons';
 
 /**
  * Interface that all cron handlers must implement.
@@ -92,23 +93,30 @@ export class CoreCronDelegate {
 
     // Variables for database.
     protected CRON_TABLE = 'cron';
-    protected tableSchema: SQLiteDBTableSchema = {
-        name: this.CRON_TABLE,
-        columns: [
+    protected tableSchema: CoreAppSchema = {
+        name: 'CoreCronDelegate',
+        version: 1,
+        tables: [
             {
-                name: 'id',
-                type: 'TEXT',
-                primaryKey: true
+                name: this.CRON_TABLE,
+                columns: [
+                    {
+                        name: 'id',
+                        type: 'TEXT',
+                        primaryKey: true
+                    },
+                    {
+                        name: 'value',
+                        type: 'INTEGER'
+                    },
+                ],
             },
-            {
-                name: 'value',
-                type: 'INTEGER'
-            }
-        ]
+        ],
     };
 
     protected logger;
     protected appDB: SQLiteDB;
+    protected dbReady: Promise<any>; // Promise resolved when the app DB is initialized.
     protected handlers: { [s: string]: CoreCronHandler } = {};
     protected queuePromise = Promise.resolve();
 
@@ -117,7 +125,9 @@ export class CoreCronDelegate {
         this.logger = logger.getInstance('CoreCronDelegate');
 
         this.appDB = this.appProvider.getDB();
-        this.appDB.createTableFromSchema(this.tableSchema);
+        this.dbReady = appProvider.createTablesFromSchema(this.tableSchema).catch(() => {
+            // Ignore errors.
+        });
 
         // When the app is re-connected, start network handlers that were stopped.
         network.onConnect().subscribe(() => {
@@ -126,6 +136,11 @@ export class CoreCronDelegate {
                 this.startNetworkHandlers();
             });
         });
+
+        // Export the sync provider so Behat tests can trigger cron tasks without waiting.
+        if (CoreAppProvider.isAutomated()) {
+            (<any> window).cronProvider = this;
+        }
     }
 
     /**
@@ -306,16 +321,19 @@ export class CoreCronDelegate {
      * @param name Handler's name.
      * @return Promise resolved with the handler's last execution time.
      */
-    protected getHandlerLastExecutionTime(name: string): Promise<number> {
+    protected async getHandlerLastExecutionTime(name: string): Promise<number> {
+        await this.dbReady;
+
         const id = this.getHandlerLastExecutionId(name);
 
-        return this.appDB.getRecord(this.CRON_TABLE, { id: id }).then((entry) => {
+        try {
+            const entry = await this.appDB.getRecord(this.CRON_TABLE, { id: id });
             const time = parseInt(entry.value, 10);
 
             return isNaN(time) ? 0 : time;
-        }).catch(() => {
+        } catch (err) {
             return 0; // Not set, return 0.
-        });
+        }
     }
 
     /**
@@ -471,7 +489,9 @@ export class CoreCronDelegate {
      * @param time Time to set.
      * @return Promise resolved when the execution time is saved.
      */
-    protected setHandlerLastExecutionTime(name: string, time: number): Promise<any> {
+    protected async setHandlerLastExecutionTime(name: string, time: number): Promise<any> {
+        await this.dbReady;
+
         const id = this.getHandlerLastExecutionId(name),
             entry = {
                 id: id,
@@ -540,3 +560,5 @@ export class CoreCronDelegate {
         delete this.handlers[name].timeout;
     }
 }
+
+export class CoreCron extends makeSingleton(CoreCronDelegate) {}

@@ -14,7 +14,7 @@
 
 import { Injectable, NgZone } from '@angular/core';
 import { Network } from '@ionic-native/network';
-import { CoreAppProvider } from './app';
+import { CoreAppProvider, CoreAppSchema } from './app';
 import { CoreEventsProvider } from './events';
 import { CoreFileProvider } from './file';
 import { CoreInitDelegate } from './init';
@@ -28,9 +28,10 @@ import { CoreTextUtilsProvider } from './utils/text';
 import { CoreTimeUtilsProvider } from './utils/time';
 import { CoreUrlUtilsProvider } from './utils/url';
 import { CoreUtilsProvider } from './utils/utils';
-import { SQLiteDB, SQLiteDBTableSchema } from '@classes/sqlitedb';
+import { SQLiteDB } from '@classes/sqlitedb';
 import { CoreConstants } from '@core/constants';
 import { Md5 } from 'ts-md5/dist/md5';
+import { makeSingleton } from '@singletons/core.singletons';
 
 /**
  * Entry from filepool.
@@ -144,7 +145,7 @@ export interface CoreFilepoolQueueEntry {
     /**
      * File links (to link the file to components and componentIds).
      */
-    links?: any[];
+    links?: CoreFilepoolComponentLink[];
 }
 
 /**
@@ -197,6 +198,66 @@ export interface CoreFilepoolPackageEntry {
     extra?: string;
 }
 
+/**
+ * A component link.
+ */
+export interface CoreFilepoolComponentLink {
+    /**
+     * Link's component.
+     */
+    component: string;
+
+    /**
+     * Link's componentId.
+     */
+    componentId?: string | number;
+}
+
+/**
+ * File actions.
+ */
+export const enum CoreFilepoolFileActions {
+    DOWNLOAD = 'download',
+    DOWNLOADING = 'downloading',
+    DELETED = 'deleted',
+    OUTDATED = 'outdated',
+}
+
+/**
+ * Data sent to file events.
+ */
+export interface CoreFilepoolFileEventData {
+    /**
+     * The file ID.
+     */
+    fileId: string;
+
+    /**
+     * The file ID.
+     */
+    action: CoreFilepoolFileActions;
+
+    /**
+     * Whether the action was a success. Only for DOWNLOAD action.
+     */
+    success?: boolean;
+}
+
+/**
+ * Data sent to component file events.
+ */
+export interface CoreFilepoolComponentFileEventData extends CoreFilepoolFileEventData {
+    /**
+     * The component.
+     */
+    component: string;
+
+    /**
+     * The component ID.
+     */
+    componentId: string | number;
+}
+
 /*
  * Factory for handling downloading files and retrieve downloaded files.
  *
@@ -218,64 +279,70 @@ export class CoreFilepoolProvider {
     protected ERR_QUEUE_IS_EMPTY = 'CoreFilepoolError:ERR_QUEUE_IS_EMPTY';
     protected ERR_FS_OR_NETWORK_UNAVAILABLE = 'CoreFilepoolError:ERR_FS_OR_NETWORK_UNAVAILABLE';
     protected ERR_QUEUE_ON_PAUSE = 'CoreFilepoolError:ERR_QUEUE_ON_PAUSE';
+    protected FILE_UPDATE_UNKNOWN_WHERE_CLAUSE =
+        'isexternalfile = 1 OR ((revision IS NULL OR revision = 0) AND (timemodified IS NULL OR timemodified = 0))';
 
     // Variables for database.
     protected QUEUE_TABLE = 'filepool_files_queue'; // Queue of files to download.
     protected FILES_TABLE = 'filepool_files'; // Downloaded files.
     protected LINKS_TABLE = 'filepool_files_links'; // Links between downloaded files and components.
     protected PACKAGES_TABLE = 'filepool_packages'; // Downloaded packages (sets of files).
-    protected appTablesSchema: SQLiteDBTableSchema[] = [
-        {
-            name: this.QUEUE_TABLE,
-            columns: [
-                {
-                    name: 'siteId',
-                    type: 'TEXT'
-                },
-                {
-                    name: 'fileId',
-                    type: 'TEXT'
-                },
-                {
-                    name: 'added',
-                    type: 'INTEGER'
-                },
-                {
-                    name: 'priority',
-                    type: 'INTEGER'
-                },
-                {
-                    name: 'url',
-                    type: 'TEXT'
-                },
-                {
-                    name: 'revision',
-                    type: 'INTEGER'
-                },
-                {
-                    name: 'timemodified',
-                    type: 'INTEGER'
-                },
-                {
-                    name: 'isexternalfile',
-                    type: 'INTEGER'
-                },
-                {
-                    name: 'repositorytype',
-                    type: 'TEXT'
-                },
-                {
-                    name: 'path',
-                    type: 'TEXT'
-                },
-                {
-                    name: 'links',
-                    type: 'TEXT'
-                }
-            ],
-            primaryKeys: ['siteId', 'fileId']
-        }
-    ];
+    protected appTablesSchema: CoreAppSchema = {
+        name: 'CoreFilepoolProvider',
+        version: 1,
+        tables: [
+            {
+                name: this.QUEUE_TABLE,
+                columns: [
+                    {
+                        name: 'siteId',
+                        type: 'TEXT'
+                    },
+                    {
+                        name: 'fileId',
+                        type: 'TEXT'
+                    },
+                    {
+                        name: 'added',
+                        type: 'INTEGER'
+                    },
+                    {
+                        name: 'priority',
+                        type: 'INTEGER'
+                    },
+                    {
+                        name: 'url',
+                        type: 'TEXT'
+                    },
+                    {
+                        name: 'revision',
+                        type: 'INTEGER'
+                    },
+                    {
+                        name: 'timemodified',
+                        type: 'INTEGER'
+                    },
+                    {
+                        name: 'isexternalfile',
+                        type: 'INTEGER'
+                    },
+                    {
+                        name: 'repositorytype',
+                        type: 'TEXT'
+                    },
+                    {
+                        name: 'path',
+                        type: 'TEXT'
+                    },
+                    {
+                        name: 'links',
+                        type: 'TEXT'
+                    },
+                ],
+                primaryKeys: ['siteId', 'fileId'],
+            },
+        ],
+    };
     protected siteSchema: CoreSiteSchema = {
         name: 'CoreFilepoolProvider',
         version: 1,
@@ -392,6 +459,7 @@ export class CoreFilepoolProvider {
 
     protected logger;
     protected appDB: SQLiteDB;
+    protected dbReady: Promise<any>; // Promise resolved when the app DB is initialized.
     protected tokenRegex = new RegExp('(\\?|&)token=([A-Za-z0-9]*)');
     protected queueState: string;
     protected urlAttributes = [
@@ -406,16 +474,28 @@ export class CoreFilepoolProvider {
     protected packagesPromises = {};
     protected filePromises: { [s: string]: { [s: string]: Promise<any> } } = {};
 
-    constructor(logger: CoreLoggerProvider, private appProvider: CoreAppProvider, private fileProvider: CoreFileProvider,
-            private sitesProvider: CoreSitesProvider, private wsProvider: CoreWSProvider, private textUtils: CoreTextUtilsProvider,
-            private utils: CoreUtilsProvider, private mimeUtils: CoreMimetypeUtilsProvider, private urlUtils: CoreUrlUtilsProvider,
-            private timeUtils: CoreTimeUtilsProvider, private eventsProvider: CoreEventsProvider, initDelegate: CoreInitDelegate,
-            network: Network, private pluginFileDelegate: CorePluginFileDelegate, private domUtils: CoreDomUtilsProvider,
+    constructor(logger: CoreLoggerProvider,
+            protected appProvider: CoreAppProvider,
+            protected fileProvider: CoreFileProvider,
+            protected sitesProvider: CoreSitesProvider,
+            protected wsProvider: CoreWSProvider,
+            protected textUtils: CoreTextUtilsProvider,
+            protected utils: CoreUtilsProvider,
+            protected mimeUtils: CoreMimetypeUtilsProvider,
+            protected urlUtils: CoreUrlUtilsProvider,
+            protected timeUtils: CoreTimeUtilsProvider,
+            protected eventsProvider: CoreEventsProvider,
+            initDelegate: CoreInitDelegate,
+            network: Network,
+            protected pluginFileDelegate: CorePluginFileDelegate,
+            protected domUtils: CoreDomUtilsProvider,
             zone: NgZone) {
         this.logger = logger.getInstance('CoreFilepoolProvider');
 
         this.appDB = this.appProvider.getDB();
-        this.appDB.createTablesFromSchema(this.appTablesSchema);
+        this.dbReady = appProvider.createTablesFromSchema(this.appTablesSchema).catch(() => {
+            // Ignore errors.
+        });
 
         this.sitesProvider.registerSiteSchema(this.siteSchema);
 
@@ -488,7 +568,7 @@ export class CoreFilepoolProvider {
      * @param links Array of objects containing the component and optionally componentId.
      * @return Promise resolved on success.
      */
-    protected addFileLinks(siteId: string, fileId: string, links: any[]): Promise<any> {
+    protected addFileLinks(siteId: string, fileId: string, links: CoreFilepoolComponentLink[]): Promise<any> {
         const promises = [];
         links.forEach((link) => {
             promises.push(this.addFileLink(siteId, fileId, link.component, link.componentId));
@@ -567,11 +647,15 @@ export class CoreFilepoolProvider {
      * @param link The link to add for the file.
      * @return Promise resolved when the file is downloaded.
      */
-    protected addToQueue(siteId: string, fileId: string, url: string, priority: number, revision: number, timemodified: number,
-            filePath: string, onProgress?: (event: any) => any, options: any = {}, link?: any): Promise<any> {
+    protected async addToQueue(siteId: string, fileId: string, url: string, priority: number, revision: number,
+            timemodified: number, filePath: string, onProgress?: (event: any) => any, options: any = {},
+            link?: CoreFilepoolComponentLink): Promise<any> {
+
+        await this.dbReady;
+
         this.logger.debug(`Adding ${fileId} to the queue`);
 
-        return this.appDB.insertRecord(this.QUEUE_TABLE, {
+        await this.appDB.insertRecord(this.QUEUE_TABLE, {
             siteId: siteId,
             fileId: fileId,
             url: url,
@@ -583,13 +667,13 @@ export class CoreFilepoolProvider {
             repositorytype: options.repositorytype,
             links: JSON.stringify(link ? [link] : []),
             added: Date.now()
-        }).then(() => {
-            // Check if the queue is running.
-            this.checkQueueProcessing();
-            this.notifyFileDownloading(siteId, fileId);
-
-            return this.getQueuePromise(siteId, fileId, true, onProgress);
         });
+
+        // Check if the queue is running.
+        this.checkQueueProcessing();
+        this.notifyFileDownloading(siteId, fileId, link ? [link] : []);
+
+        return this.getQueuePromise(siteId, fileId, true, onProgress);
     }
 
     /**
@@ -608,11 +692,12 @@ export class CoreFilepoolProvider {
      * @param alreadyFixed Whether the URL has already been fixed.
      * @return Resolved on success.
      */
-    addToQueueByUrl(siteId: string, fileUrl: string, component?: string, componentId?: string | number, timemodified: number = 0,
-            filePath?: string, onProgress?: (event: any) => any, priority: number = 0, options: any = {}, revision?: number,
-            alreadyFixed?: boolean): Promise<any> {
+    async addToQueueByUrl(siteId: string, fileUrl: string, component?: string, componentId?: string | number,
+            timemodified: number = 0, filePath?: string, onProgress?: (event: any) => any, priority: number = 0, options: any = {},
+            revision?: number, alreadyFixed?: boolean): Promise<any> {
+        await this.dbReady;
+
         let fileId,
-            link,
             queueDeferred;
 
         if (!this.fileProvider.isAvailable()) {
@@ -640,12 +725,7 @@ export class CoreFilepoolProvider {
             const primaryKey = { siteId: siteId, fileId: fileId };
 
             // Set up the component.
-            if (typeof component != 'undefined') {
-                link = {
-                    component: component,
-                    componentId: this.fixComponentId(componentId)
-                };
-            }
+            const link = this.createComponentLink(component, componentId);
 
             // Retrieve the queue deferred now if it exists.
             // This is to prevent errors if file is removed from queue while we're checking if the file is in queue.
@@ -855,7 +935,7 @@ export class CoreFilepoolProvider {
         return this.sitesProvider.getSiteDb(siteId).then((db) => {
             const conditions = {
                 component: component,
-                componentId: componentId || ''
+                componentId: this.fixComponentId(componentId)
             };
 
             return db.countRecords(this.LINKS_TABLE, conditions).then((count) => {
@@ -864,6 +944,34 @@ export class CoreFilepoolProvider {
                 }
             });
         });
+    }
+
+    /**
+     * Prepare a component link.
+     *
+     * @param component The component to link the file to.
+     * @param componentId An ID to use in conjunction with the component.
+     * @return Link, null if nothing to link.
+     */
+    protected createComponentLink(component: string, componentId?: string | number): CoreFilepoolComponentLink {
+        if (typeof component != 'undefined' && component != null)  {
+            return { component: component, componentId: this.fixComponentId(componentId) };
+        }
+
+        return null;
+    }
+
+    /**
+     * Prepare list of links from component and componentId.
+     *
+     * @param component The component to link the file to.
+     * @param componentId An ID to use in conjunction with the component.
+     * @return Links.
+     */
+    protected createComponentLinks(component: string, componentId?: string | number): CoreFilepoolComponentLink[] {
+        const link = this.createComponentLink(component, componentId);
+
+        return link ? [link] : [];
     }
 
     /**
@@ -952,7 +1060,7 @@ export class CoreFilepoolProvider {
                 return this.wsProvider.downloadFile(fileUrl, filePath, addExtension, onProgress).then((entry) => {
                     fileEntry = entry;
 
-                    return this.pluginFileDelegate.treatDownloadedFile(fileUrl, fileEntry, siteId);
+                    return this.pluginFileDelegate.treatDownloadedFile(fileUrl, fileEntry, siteId, onProgress);
                 }).then(() => {
                     const data: CoreFilepoolFileEntry = poolFileObject || {};
 
@@ -1168,8 +1276,9 @@ export class CoreFilepoolProvider {
     downloadUrl(siteId: string, fileUrl: string, ignoreStale?: boolean, component?: string, componentId?: string | number,
             timemodified: number = 0, onProgress?: (event: any) => any, filePath?: string, options: any = {}, revision?: number)
             : Promise<any> {
-        let fileId,
-            promise;
+        let fileId;
+        let promise;
+        let alreadyDownloaded = true;
 
         if (this.fileProvider.isAvailable()) {
             return this.fixPluginfileURL(siteId, fileUrl).then((file) => {
@@ -1182,18 +1291,22 @@ export class CoreFilepoolProvider {
                 options.revision = revision || this.getRevisionFromUrl(fileUrl);
                 fileId = this.getFileIdByUrl(fileUrl);
 
+                const links = this.createComponentLinks(component, componentId);
+
                 return this.hasFileInPool(siteId, fileId).then((fileObject) => {
 
                     if (typeof fileObject === 'undefined') {
                         // We do not have the file, download and add to pool.
-                        this.notifyFileDownloading(siteId, fileId);
+                        this.notifyFileDownloading(siteId, fileId, links);
+                        alreadyDownloaded = false;
 
                         return this.downloadForPoolByUrl(siteId, fileUrl, options, filePath, onProgress);
 
                     } else if (this.isFileOutdated(fileObject, options.revision, options.timemodified) &&
-                        this.appProvider.isOnline() && !ignoreStale) {
+                            this.appProvider.isOnline() && !ignoreStale) {
                         // The file is outdated, force the download and update it.
-                        this.notifyFileDownloading(siteId, fileId);
+                        this.notifyFileDownloading(siteId, fileId, links);
+                        alreadyDownloaded = false;
 
                         return this.downloadForPoolByUrl(siteId, fileUrl, options, filePath, onProgress, fileObject);
                     }
@@ -1209,14 +1322,16 @@ export class CoreFilepoolProvider {
                         return response;
                     }, () => {
                         // The file was not found in the pool, weird.
-                        this.notifyFileDownloading(siteId, fileId);
+                        this.notifyFileDownloading(siteId, fileId, links);
+                        alreadyDownloaded = false;
 
                         return this.downloadForPoolByUrl(siteId, fileUrl, options, filePath, onProgress, fileObject);
                     });
 
                 }, () => {
                     // The file is not in the pool just yet.
-                    this.notifyFileDownloading(siteId, fileId);
+                    this.notifyFileDownloading(siteId, fileId, links);
+                    alreadyDownloaded = false;
 
                     return this.downloadForPoolByUrl(siteId, fileUrl, options, filePath, onProgress);
                 }).then((response) => {
@@ -1225,11 +1340,14 @@ export class CoreFilepoolProvider {
                             // Ignore errors.
                         });
                     }
-                    this.notifyFileDownloaded(siteId, fileId);
+
+                    if (!alreadyDownloaded) {
+                        this.notifyFileDownloaded(siteId, fileId, links);
+                    }
 
                     return response;
                 }, (err) => {
-                    this.notifyFileDownloadError(siteId, fileId);
+                    this.notifyFileDownloadError(siteId, fileId, links);
 
                     return Promise.reject(err);
                 });
@@ -1281,7 +1399,7 @@ export class CoreFilepoolProvider {
      * @param html HTML code.
      * @return List of fake file objects with file URLs.
      */
-    extractDownloadableFilesFromHtmlAsFakeFileObjects(html: string): any[] {
+    extractDownloadableFilesFromHtmlAsFakeFileObjects(html: string): CoreWSExternalFile[] {
         const urls = this.extractDownloadableFilesFromHtml(html);
 
         // Convert them to fake file objects.
@@ -1331,28 +1449,6 @@ export class CoreFilepoolProvider {
 
                 // Now update the links.
                 return db.updateRecords(this.LINKS_TABLE, { fileId: entry.fileId }, { fileId: fileId });
-            });
-        });
-    }
-
-    /**
-     * Fill Missing Extension In Files, used to migrate from previous file handling.
-     * Reserved for core use, please do not call.
-     *
-     * @param siteId SiteID to get migrated
-     * @return Promise resolved when done.
-     */
-    fillMissingExtensionInFiles(siteId: string): Promise<any> {
-        this.logger.debug('Fill missing extensions in files of ' + siteId);
-
-        return this.sitesProvider.getSiteDb(siteId).then((db) => {
-            return db.getAllRecords(this.FILES_TABLE).then((entries) => {
-                const promises = [];
-                entries.forEach((entry) => {
-                    promises.push(this.fillExtensionInFile(entry, siteId));
-                });
-
-                return Promise.all(promises);
             });
         });
     }
@@ -1415,10 +1511,16 @@ export class CoreFilepoolProvider {
     protected getComponentFiles(db: SQLiteDB, component: string, componentId?: string | number): Promise<any[]> {
         const conditions = {
             component: component,
-            componentId: componentId || ''
+            componentId: this.fixComponentId(componentId)
         };
 
-        return db.getRecords(this.LINKS_TABLE, conditions);
+        return db.getRecords(this.LINKS_TABLE, conditions).then((items) => {
+            items.forEach((item) => {
+                item.componentId = this.fixComponentId(item.componentId);
+            });
+
+            return items;
+        });
     }
 
     /**
@@ -1527,6 +1629,12 @@ export class CoreFilepoolProvider {
     protected getFileLinks(siteId: string, fileId: string): Promise<any[]> {
         return this.sitesProvider.getSiteDb(siteId).then((db) => {
             return db.getRecords(this.LINKS_TABLE, { fileId: fileId });
+        }).then((items) => {
+            items.forEach((item) => {
+                item.componentId = this.fixComponentId(item.componentId);
+            });
+
+            return items;
         });
     }
 
@@ -1662,46 +1770,50 @@ export class CoreFilepoolProvider {
      * @param revision File revision. If not defined, it will be calculated using the URL.
      * @return Promise resolved with the file state.
      */
-    getFileStateByUrl(siteId: string, fileUrl: string, timemodified: number = 0, filePath?: string, revision?: number)
+    async getFileStateByUrl(siteId: string, fileUrl: string, timemodified: number = 0, filePath?: string, revision?: number)
             : Promise<string> {
-        let fileId;
+        let file;
 
-        return this.fixPluginfileURL(siteId, fileUrl, timemodified).then((file) => {
-
-            fileUrl = file.fileurl;
-            timemodified = file.timemodified || timemodified;
-            revision = revision || this.getRevisionFromUrl(fileUrl);
-            fileId = this.getFileIdByUrl(fileUrl);
-
-            // Check if the file is in queue (waiting to be downloaded).
-            return this.hasFileInQueue(siteId, fileId).then(() => {
-                return CoreConstants.DOWNLOADING;
-            }).catch(() => {
-                // Check if the file is being downloaded right now.
-                const extension = this.mimeUtils.guessExtensionFromUrl(fileUrl),
-                    path = filePath ? filePath : this.getFilePath(siteId, fileId, extension);
-
-                return Promise.resolve(path).then((filePath) => {
-                    const downloadId = this.getFileDownloadId(fileUrl, filePath);
-                    if (this.filePromises[siteId] && this.filePromises[siteId][downloadId]) {
-                        return CoreConstants.DOWNLOADING;
-                    }
-
-                    // File is not being downloaded. Check if it's downloaded and if it's outdated.
-                    return this.hasFileInPool(siteId, fileId).then((entry) => {
-                        if (this.isFileOutdated(entry, revision, timemodified)) {
-                            return CoreConstants.OUTDATED;
-                        } else {
-                            return CoreConstants.DOWNLOADED;
-                        }
-                    }).catch(() => {
-                        return CoreConstants.NOT_DOWNLOADED;
-                    });
-                });
-            });
-        }, () => {
+        try {
+            file = await this.fixPluginfileURL(siteId, fileUrl, timemodified);
+        } catch (e) {
             return CoreConstants.NOT_DOWNLOADABLE;
-        });
+        }
+
+        fileUrl = file.fileurl;
+        timemodified = file.timemodified || timemodified;
+        revision = revision || this.getRevisionFromUrl(fileUrl);
+        const fileId = this.getFileIdByUrl(fileUrl);
+
+        try {
+            // Check if the file is in queue (waiting to be downloaded).
+            await this.hasFileInQueue(siteId, fileId);
+
+            return CoreConstants.DOWNLOADING;
+        } catch (e) {
+            // Check if the file is being downloaded right now.
+            const extension = this.mimeUtils.guessExtensionFromUrl(fileUrl);
+            filePath = filePath || (await this.getFilePath(siteId, fileId, extension));
+
+            const downloadId = this.getFileDownloadId(fileUrl, filePath);
+
+            if (this.filePromises[siteId] && this.filePromises[siteId][downloadId]) {
+                return CoreConstants.DOWNLOADING;
+            }
+
+            try {
+                // File is not being downloaded. Check if it's downloaded and if it's outdated.
+                const entry = await this.hasFileInPool(siteId, fileId);
+
+                if (this.isFileOutdated(entry, revision, timemodified)) {
+                    return CoreConstants.OUTDATED;
+                }
+
+                return CoreConstants.DOWNLOADED;
+            } catch (e) {
+                return CoreConstants.NOT_DOWNLOADED;
+            }
+        }
     }
 
     /**
@@ -1806,8 +1918,7 @@ export class CoreFilepoolProvider {
         if (this.fileProvider.isAvailable()) {
             return Promise.resolve(this.getFilePath(siteId, fileId)).then((path) => {
                 return this.fileProvider.getFile(path).then((fileEntry) => {
-                    // We use toInternalURL so images are loaded in iOS8 using img HTML tags.
-                    return this.fileProvider.getInternalURL(fileEntry);
+                    return this.fileProvider.convertFileSrc(fileEntry.toURL());
                 });
             });
         }
@@ -2309,16 +2420,17 @@ export class CoreFilepoolProvider {
      * @param fileUrl The file URL.
      * @return Resolved with file object from DB on success, rejected otherwise.
      */
-    protected hasFileInQueue(siteId: string, fileId: string): Promise<CoreFilepoolQueueEntry> {
-        return this.appDB.getRecord(this.QUEUE_TABLE, { siteId: siteId, fileId: fileId }).then((entry) => {
-            if (typeof entry === 'undefined') {
-                return Promise.reject(null);
-            }
-            // Convert the links to an object.
-            entry.links = this.textUtils.parseJSON(entry.links, []);
+    protected async hasFileInQueue(siteId: string, fileId: string): Promise<CoreFilepoolQueueEntry> {
+        await this.dbReady;
 
-            return entry;
-        });
+        const entry = await this.appDB.getRecord(this.QUEUE_TABLE, { siteId: siteId, fileId: fileId });
+        if (typeof entry === 'undefined') {
+            throw null;
+        }
+        // Convert the links to an object.
+        entry.links = this.textUtils.parseJSON(entry.links, []);
+
+        return entry;
     }
 
     /**
@@ -2329,17 +2441,12 @@ export class CoreFilepoolProvider {
      *                    It is advised to set it to true to reduce the performance and data usage of the app.
      * @return Resolved on success.
      */
-    invalidateAllFiles(siteId: string, onlyUnknown: boolean = true): Promise<any> {
-        return this.sitesProvider.getSiteDb(siteId).then((db) => {
-            let where,
-                whereParams;
-            if (onlyUnknown) {
-                where = 'isexternalfile = ? OR (revision < ? AND timemodified = ?)';
-                whereParams = [0, 1, 0];
-            }
+    async invalidateAllFiles(siteId: string, onlyUnknown: boolean = true): Promise<void> {
+        const db = await this.sitesProvider.getSiteDb(siteId);
 
-            return db.updateRecordsWhere(this.FILES_TABLE, { stale: 1 }, where, whereParams);
-        });
+        const where = onlyUnknown ? this.FILE_UPDATE_UNKNOWN_WHERE_CLAUSE : null;
+
+        await db.updateRecordsWhere(this.FILES_TABLE, { stale: 1 }, where);
     }
 
     /**
@@ -2374,25 +2481,56 @@ export class CoreFilepoolProvider {
      *                    It is advised to set it to true to reduce the performance and data usage of the app.
      * @return Resolved when done.
      */
-    invalidateFilesByComponent(siteId: string, component: string, componentId?: string | number, onlyUnknown: boolean = true)
-            : Promise<any> {
-        return this.sitesProvider.getSiteDb(siteId).then((db) => {
-            return this.getComponentFiles(db, component, componentId).then((items) => {
-                const fileIds = items.map((item) => {
-                        return item.fileId;
-                    }),
-                    whereAndParams = db.getInOrEqual(fileIds);
+    async invalidateFilesByComponent(siteId: string, component: string, componentId?: string | number, onlyUnknown: boolean = true)
+            : Promise<void> {
 
-                whereAndParams[0] = 'fileId ' + whereAndParams[0];
+        const db = await this.sitesProvider.getSiteDb(siteId);
 
-                if (onlyUnknown) {
-                    whereAndParams[0] += ' AND (isexternalfile = ? OR (revision < ? AND timemodified = ?))';
-                    whereAndParams[1] = whereAndParams[1].concat([0, 1, 0]);
-                }
+        const items = await this.getComponentFiles(db, component, componentId);
 
-                return db.updateRecordsWhere(this.FILES_TABLE, { stale: 1 }, whereAndParams[0], whereAndParams[1]);
-            });
-        });
+        if (!items.length) {
+            // Nothing to invalidate.
+            return;
+        }
+
+        const fileIds = items.map((item) => item.fileId);
+        const whereAndParams = db.getInOrEqual(fileIds);
+
+        whereAndParams[0] = 'fileId ' + whereAndParams[0];
+
+        if (onlyUnknown) {
+            whereAndParams[0] += ' AND (' + this.FILE_UPDATE_UNKNOWN_WHERE_CLAUSE + ')';
+        }
+
+        await db.updateRecordsWhere(this.FILES_TABLE, { stale: 1 }, whereAndParams[0], whereAndParams[1]);
+    }
+
+    /**
+     * Whether a file action indicates a file was downloaded or deleted.
+     *
+     * @param data Event data.
+     * @return Whether downloaded or deleted.
+     */
+    isFileEventDownloadedOrDeleted(data: CoreFilepoolFileEventData): boolean {
+        return (data.action == CoreFilepoolFileActions.DOWNLOAD && data.success == true) ||
+                data.action == CoreFilepoolFileActions.DELETED;
+    }
+
+    /**
+     * Check whether a file is downloadable.
+     *
+     * @param siteId The site ID.
+     * @param fileUrl File URL.
+     * @param timemodified The time this file was modified.
+     * @param filePath Filepath to download the file to. If defined, no extension will be added.
+     * @param revision File revision. If not defined, it will be calculated using the URL.
+     * @return Promise resolved with a boolean: whether a file is downloadable.
+     */
+    async isFileDownloadable(siteId: string, fileUrl: string, timemodified: number = 0, filePath?: string, revision?: number)
+            : Promise<boolean> {
+        const state = await this.getFileStateByUrl(siteId, fileUrl, timemodified, filePath, revision);
+
+        return state != CoreConstants.NOT_DOWNLOADABLE;
     }
 
     /**
@@ -2429,7 +2567,27 @@ export class CoreFilepoolProvider {
      * @return Whether it cannot determine updates.
      */
     protected isFileUpdateUnknown(entry: CoreFilepoolFileEntry): boolean {
-        return !!entry.isexternalfile || (entry.revision < 1 && !entry.timemodified);
+        return !!entry.isexternalfile || (!entry.revision && !entry.timemodified);
+    }
+
+    /**
+     * Notify an action performed on a file to a list of components.
+     *
+     * @param siteId The site ID.
+     * @param eventData The file event data.
+     * @param links The links to the components.
+     */
+    protected notifyFileActionToComponents(siteId: string, eventData: CoreFilepoolFileEventData,
+            links: CoreFilepoolComponentLink[]): void {
+
+        links.forEach((link) => {
+            const data: CoreFilepoolComponentFileEventData = Object.assign({
+                component: link.component,
+                componentId: link.componentId,
+            }, eventData);
+
+            this.eventsProvider.trigger(CoreEventsProvider.COMPONENT_FILE_ACTION, data, siteId);
+        });
     }
 
     /**
@@ -2437,9 +2595,16 @@ export class CoreFilepoolProvider {
      *
      * @param siteId The site ID.
      * @param fileId The file ID.
+     * @param links The links to components.
      */
-    protected notifyFileDeleted(siteId: string, fileId: string): void {
-        this.eventsProvider.trigger(this.getFileEventName(siteId, fileId), { action: 'deleted' });
+    protected notifyFileDeleted(siteId: string, fileId: string, links: CoreFilepoolComponentLink[]): void {
+        const data: CoreFilepoolFileEventData = {
+            fileId: fileId,
+            action: CoreFilepoolFileActions.DELETED,
+        };
+
+        this.eventsProvider.trigger(this.getFileEventName(siteId, fileId), data);
+        this.notifyFileActionToComponents(siteId, data, links);
     }
 
     /**
@@ -2447,9 +2612,17 @@ export class CoreFilepoolProvider {
      *
      * @param siteId The site ID.
      * @param fileId The file ID.
+     * @param links The links to components.
      */
-    protected notifyFileDownloaded(siteId: string, fileId: string): void {
-        this.eventsProvider.trigger(this.getFileEventName(siteId, fileId), { action: 'download', success: true });
+    protected notifyFileDownloaded(siteId: string, fileId: string, links: CoreFilepoolComponentLink[]): void {
+        const data: CoreFilepoolFileEventData = {
+            fileId: fileId,
+            action: CoreFilepoolFileActions.DOWNLOAD,
+            success: true,
+        };
+
+        this.eventsProvider.trigger(this.getFileEventName(siteId, fileId), data);
+        this.notifyFileActionToComponents(siteId, data, links);
     }
 
     /**
@@ -2457,9 +2630,17 @@ export class CoreFilepoolProvider {
      *
      * @param siteId The site ID.
      * @param fileId The file ID.
+     * @param links The links to components.
      */
-    protected notifyFileDownloadError(siteId: string, fileId: string): void {
-        this.eventsProvider.trigger(this.getFileEventName(siteId, fileId), { action: 'download', success: false });
+    protected notifyFileDownloadError(siteId: string, fileId: string, links: CoreFilepoolComponentLink[]): void {
+        const data: CoreFilepoolFileEventData = {
+            fileId: fileId,
+            action: CoreFilepoolFileActions.DOWNLOAD,
+            success: false,
+        };
+
+        this.eventsProvider.trigger(this.getFileEventName(siteId, fileId), data);
+        this.notifyFileActionToComponents(siteId, data, links);
     }
 
     /**
@@ -2467,9 +2648,17 @@ export class CoreFilepoolProvider {
      *
      * @param siteId The site ID.
      * @param fileId The file ID.
+     * @param links The links to components.
      */
-    protected notifyFileDownloading(siteId: string, fileId: string): void {
-        this.eventsProvider.trigger(this.getFileEventName(siteId, fileId), { action: 'downloading' });
+    protected notifyFileDownloading(siteId: string, fileId: string, links: CoreFilepoolComponentLink[]): void {
+        const data: CoreFilepoolFileEventData = {
+            fileId: fileId,
+            action: CoreFilepoolFileActions.DOWNLOADING,
+        };
+
+        this.eventsProvider.trigger(this.getFileEventName(siteId, fileId), data);
+        this.notifyFileActionToComponents(siteId, data, links);
+
     }
 
     /**
@@ -2477,9 +2666,16 @@ export class CoreFilepoolProvider {
      *
      * @param siteId The site ID.
      * @param fileId The file ID.
+     * @param links The links to components.
      */
-    protected notifyFileOutdated(siteId: string, fileId: string): void {
-        this.eventsProvider.trigger(this.getFileEventName(siteId, fileId), { action: 'outdated' });
+    protected notifyFileOutdated(siteId: string, fileId: string, links: CoreFilepoolComponentLink[]): void {
+        const data: CoreFilepoolFileEventData = {
+            fileId: fileId,
+            action: CoreFilepoolFileActions.OUTDATED,
+        };
+
+        this.eventsProvider.trigger(this.getFileEventName(siteId, fileId), data);
+        this.notifyFileActionToComponents(siteId, data, links);
     }
 
     /**
@@ -2546,19 +2742,25 @@ export class CoreFilepoolProvider {
      *
      * @return Resolved on success. Rejected on failure.
      */
-    protected processImportantQueueItem(): Promise<any> {
-        return this.appDB.getRecords(this.QUEUE_TABLE, undefined, 'priority DESC, added ASC', undefined, 0, 1).then((items) => {
-            const item = items.pop();
-            if (!item) {
-                return Promise.reject(this.ERR_QUEUE_IS_EMPTY);
-            }
-            // Convert the links to an object.
-            item.links = this.textUtils.parseJSON(item.links, []);
+    protected async processImportantQueueItem(): Promise<any> {
+        await this.dbReady;
 
-            return this.processQueueItem(item);
-        }, () => {
-            return Promise.reject(this.ERR_QUEUE_IS_EMPTY);
-        });
+        let items;
+
+        try {
+            items = await this.appDB.getRecords(this.QUEUE_TABLE, undefined, 'priority DESC, added ASC', undefined, 0, 1);
+        } catch (err) {
+            throw this.ERR_QUEUE_IS_EMPTY;
+        }
+
+        const item = items.pop();
+        if (!item) {
+            throw this.ERR_QUEUE_IS_EMPTY;
+        }
+        // Convert the links to an object.
+        item.links = this.textUtils.parseJSON(item.links, []);
+
+        return this.processQueueItem(item);
     }
 
     /**
@@ -2599,7 +2801,6 @@ export class CoreFilepoolProvider {
                 }).finally(() => {
                     this.treatQueueDeferred(siteId, fileId, true);
                 });
-                this.notifyFileDownloaded(siteId, fileId);
 
                 return;
             }
@@ -2614,7 +2815,7 @@ export class CoreFilepoolProvider {
                 });
 
                 this.treatQueueDeferred(siteId, fileId, true);
-                this.notifyFileDownloaded(siteId, fileId);
+                this.notifyFileDownloaded(siteId, fileId, links);
 
                 // Wait for the item to be removed from queue before resolving the promise.
                 // If the item could not be removed from queue we still resolve the promise.
@@ -2664,12 +2865,12 @@ export class CoreFilepoolProvider {
                         // Consider this as a silent error, never reject the promise here.
                     }).then(() => {
                         this.treatQueueDeferred(siteId, fileId, false, errorMessage);
-                        this.notifyFileDownloadError(siteId, fileId);
+                        this.notifyFileDownloadError(siteId, fileId, links);
                     });
                 } else {
                     // We considered the file as legit but did not get it, failure.
                     this.treatQueueDeferred(siteId, fileId, false, errorMessage);
-                    this.notifyFileDownloadError(siteId, fileId);
+                    this.notifyFileDownloadError(siteId, fileId, links);
 
                     return Promise.reject(errorObject);
                 }
@@ -2685,7 +2886,9 @@ export class CoreFilepoolProvider {
      * @param fileId The file ID.
      * @return Resolved on success. Rejected on failure. It is advised to silently ignore failures.
      */
-    protected removeFromQueue(siteId: string, fileId: string): Promise<any> {
+    protected async removeFromQueue(siteId: string, fileId: string): Promise<any> {
+        await this.dbReady;
+
         return this.appDB.deleteRecords(this.QUEUE_TABLE, { siteId: siteId, fileId: fileId });
     }
 
@@ -2715,30 +2918,37 @@ export class CoreFilepoolProvider {
                 // If file not found, use the path without extension.
                 return path;
             }).then((path) => {
-                const promises = [];
+                const conditions = {
+                    fileId: fileId
+                };
 
-                // Remove entry from filepool store.
-                promises.push(db.deleteRecords(this.FILES_TABLE, { fileId: fileId }));
+                // Get links to components to notify them after remove.
+                return this.getFileLinks(siteId, fileId).then((links) => {
+                    const promises = [];
 
-                // Remove links.
-                promises.push(db.deleteRecords(this.LINKS_TABLE, { fileId: fileId }));
+                    // Remove entry from filepool store.
+                    promises.push(db.deleteRecords(this.FILES_TABLE, conditions));
 
-                // Remove the file.
-                if (this.fileProvider.isAvailable()) {
-                    promises.push(this.fileProvider.removeFile(path).catch((error) => {
-                        if (error && error.code == 1) {
-                            // Not found, ignore error since maybe it was deleted already.
-                        } else {
-                            return Promise.reject(error);
-                        }
-                    }));
-                }
+                    // Remove links.
+                    promises.push(db.deleteRecords(this.LINKS_TABLE, conditions));
 
-                return Promise.all(promises).then(() => {
-                    this.notifyFileDeleted(siteId, fileId);
+                    // Remove the file.
+                    if (this.fileProvider.isAvailable()) {
+                        promises.push(this.fileProvider.removeFile(path).catch((error) => {
+                            if (error && error.code == 1) {
+                                // Not found, ignore error since maybe it was deleted already.
+                            } else {
+                                return Promise.reject(error);
+                            }
+                        }));
+                    }
 
-                    return this.pluginFileDelegate.fileDeleted(fileUrl, path, siteId).catch((error) => {
-                        // Ignore errors.
+                    return Promise.all(promises).then(() => {
+                        this.notifyFileDeleted(siteId, fileId, links);
+
+                        return this.pluginFileDelegate.fileDeleted(fileUrl, path, siteId).catch((error) => {
+                            // Ignore errors.
+                        });
                     });
                 });
             });
@@ -2973,7 +3183,7 @@ export class CoreFilepoolProvider {
 
         urls.forEach((url) => {
             // Download the file only if it's an online URL.
-            if (url.indexOf('http') == 0) {
+            if (!this.urlUtils.isLocalFileUrl(url)) {
                 promises.push(this.downloadUrl(siteId, url, false, component, componentId, 0, undefined, undefined, undefined,
                         revision).then((fileUrl) => {
 
@@ -2995,34 +3205,6 @@ export class CoreFilepoolProvider {
             }
         }).then(() => {
             return cssCode;
-        });
-    }
-
-    /**
-     * Remove extension from fileId in queue, used to migrate from previous file handling.
-     *
-     * @return Promise resolved when done.
-     */
-    treatExtensionInQueue(): Promise<any> {
-        this.logger.debug('Treat extensions in queue');
-
-        return this.appDB.getAllRecords(this.QUEUE_TABLE).then((entries) => {
-            const promises = [];
-            entries.forEach((entry) => {
-
-                // For files in the queue, we only need to remove the extension from the fileId.
-                // After downloading, additional info will be added.
-                const fileId = entry.fileId;
-                entry.fileId = this.mimeUtils.removeExtension(fileId);
-
-                if (fileId == entry.fileId) {
-                    return;
-                }
-
-                promises.push(this.appDB.updateRecords(this.QUEUE_TABLE, { fileId: entry.fileId }, { fileId: fileId }));
-            });
-
-            return Promise.all(promises);
         });
     }
 
@@ -3082,3 +3264,5 @@ export class CoreFilepoolProvider {
         });
     }
 }
+
+export class CoreFilepool extends makeSingleton(CoreFilepoolProvider) {}

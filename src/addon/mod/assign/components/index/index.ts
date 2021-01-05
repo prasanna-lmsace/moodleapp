@@ -133,8 +133,15 @@ export class AddonModAssignIndexComponent extends CoreCourseModuleMainActivityCo
         ev && ev.stopPropagation();
 
         if (this.assign && (this.description || this.assign.introattachments)) {
-            this.textUtils.expandText(this.translate.instant('core.description'), this.description, this.component,
-                    this.module.id, this.assign.introattachments, true, 'module', this.module.id, this.courseId);
+            this.textUtils.viewText(this.translate.instant('core.description'), this.description, {
+                component: this.component,
+                componentId: this.module.id,
+                files: this.assign.introattachments,
+                filter: true,
+                contextLevel: 'module',
+                instanceId: this.module.id,
+                courseId: this.courseId,
+            });
         }
     }
 
@@ -168,7 +175,7 @@ export class AddonModAssignIndexComponent extends CoreCourseModuleMainActivityCo
             this.hasOffline = hasOffline;
 
             // Get assignment submissions.
-            return this.assignProvider.getSubmissions(this.assign.id).then((data) => {
+            return this.assignProvider.getSubmissions(this.assign.id, {cmId: this.module.id}).then((data) => {
                 const time = this.timeUtils.timestamp();
 
                 this.canViewAllSubmissions = data.canviewsubmissions;
@@ -200,16 +207,17 @@ export class AddonModAssignIndexComponent extends CoreCourseModuleMainActivityCo
 
                     // Check if groupmode is enabled to avoid showing wrong numbers.
                     return this.groupsProvider.getActivityGroupInfo(this.assign.cmid, false).then((groupInfo) => {
+                        const currentSite = this.sitesProvider.getCurrentSite();
                         this.groupInfo = groupInfo;
                         this.showNumbers = groupInfo.groups.length == 0 ||
-                            this.sitesProvider.getCurrentSite().isVersionGreaterEqualThan('3.5');
+                            (currentSite && currentSite.isVersionGreaterEqualThan('3.5'));
 
                         return this.setGroup(this.groupsProvider.validateGroupId(this.group, groupInfo));
                     });
                 }
 
                 // Check if the user can view their own submission.
-                return this.assignProvider.getSubmissionStatus(this.assign.id).then(() => {
+                return this.assignProvider.getSubmissionStatus(this.assign.id, {cmId: this.module.id}).then(() => {
                     this.canViewOwnSubmission = true;
                 }).catch((error) => {
                     this.canViewOwnSubmission = false;
@@ -233,7 +241,10 @@ export class AddonModAssignIndexComponent extends CoreCourseModuleMainActivityCo
     setGroup(groupId: number): Promise<any> {
         this.group = groupId;
 
-        return this.assignProvider.getSubmissionStatus(this.assign.id, undefined, this.group).then((response) => {
+        return this.assignProvider.getSubmissionStatus(this.assign.id, {
+            groupId: this.group,
+            cmId: this.module.id,
+        }).then((response) => {
             this.summary = response.gradingsummary;
             if (typeof this.summary.warnofungroupedusers == 'boolean' && this.summary.warnofungroupedusers) {
                 this.summary.warnofungroupedusers = 'ungroupedusers';
@@ -251,8 +262,10 @@ export class AddonModAssignIndexComponent extends CoreCourseModuleMainActivityCo
                 }
             }
 
+            const currentSite = this.sitesProvider.getCurrentSite();
+
             this.needsGradingAvalaible = response.gradingsummary && response.gradingsummary.submissionsneedgradingcount > 0 &&
-                    this.sitesProvider.getCurrentSite().isVersionGreaterEqualThan('3.2');
+                    currentSite && currentSite.isVersionGreaterEqualThan('3.2');
         });
     }
 
@@ -289,7 +302,7 @@ export class AddonModAssignIndexComponent extends CoreCourseModuleMainActivityCo
      */
     protected hasSyncSucceed(result: any): boolean {
         if (result.updated) {
-            this.submissionComponent && this.submissionComponent.invalidateAndRefresh();
+            this.submissionComponent && this.submissionComponent.invalidateAndRefresh(false);
         }
 
         return result.updated;
@@ -314,7 +327,7 @@ export class AddonModAssignIndexComponent extends CoreCourseModuleMainActivityCo
         }
 
         return Promise.all(promises).finally(() => {
-            this.submissionComponent && this.submissionComponent.invalidateAndRefresh();
+            this.submissionComponent && this.submissionComponent.invalidateAndRefresh(true);
         });
     }
 

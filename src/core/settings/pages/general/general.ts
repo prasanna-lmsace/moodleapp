@@ -14,14 +14,13 @@
 
 import { Component, ViewChild } from '@angular/core';
 import { IonicPage, Segment } from 'ionic-angular';
-import { CoreAppProvider } from '@providers/app';
 import { CoreConstants } from '@core/constants';
+import { CoreApp } from '@providers/app';
 import { CoreConfigProvider } from '@providers/config';
 import { CoreFileProvider } from '@providers/file';
 import { CoreEventsProvider } from '@providers/events';
 import { CoreLangProvider } from '@providers/lang';
 import { CoreDomUtilsProvider } from '@providers/utils/dom';
-import { CoreLocalNotificationsProvider } from '@providers/local-notifications';
 import { CorePushNotificationsProvider } from '@core/pushnotifications/providers/pushnotifications';
 import { CoreConfigConstants } from '../../../../configconstants';
 import { CoreSettingsHelper } from '../../providers/helper';
@@ -47,11 +46,16 @@ export class CoreSettingsGeneralPage {
     analyticsEnabled: boolean;
     colorSchemes = [];
     selectedScheme: string;
+    colorSchemeDisabled: boolean;
+    isAndroid: boolean;
 
-    constructor(private appProvider: CoreAppProvider, private configProvider: CoreConfigProvider, fileProvider: CoreFileProvider,
-            private eventsProvider: CoreEventsProvider, private langProvider: CoreLangProvider,
-            private domUtils: CoreDomUtilsProvider, private pushNotificationsProvider: CorePushNotificationsProvider,
-            localNotificationsProvider: CoreLocalNotificationsProvider, private settingsHelper: CoreSettingsHelper) {
+    constructor(protected configProvider: CoreConfigProvider,
+            fileProvider: CoreFileProvider,
+            protected eventsProvider: CoreEventsProvider,
+            protected langProvider: CoreLangProvider,
+            protected domUtils: CoreDomUtilsProvider,
+            protected pushNotificationsProvider: CorePushNotificationsProvider,
+            protected settingsHelper: CoreSettingsHelper) {
 
         // Get the supported languages.
         const languages = CoreConfigConstants.languages;
@@ -63,20 +67,20 @@ export class CoreSettingsGeneralPage {
         }
 
         if (!CoreConfigConstants.forceColorScheme) {
-            let defaultColorScheme = 'light';
+            this.colorSchemeDisabled = this.settingsHelper.isColorSchemeDisabledInSite();
 
-            // Auto is not working on iOS right now until we update Webkit.
-            if (!this.appProvider.isIOS() && (window.matchMedia('(prefers-color-scheme: dark)').matches ||
-                                window.matchMedia('(prefers-color-scheme: light)').matches)) {
-                this.colorSchemes.push('auto');
-                defaultColorScheme = 'auto';
+            if (this.colorSchemeDisabled) {
+                this.colorSchemes.push('light');
+                this.selectedScheme = this.colorSchemes[0];
+            } else {
+                this.isAndroid = CoreApp.instance.isAndroid();
+
+                this.colorSchemes = this.settingsHelper.getAllowedColorSchemes();
+
+                this.configProvider.get(CoreConstants.SETTINGS_COLOR_SCHEME, 'light').then((scheme) => {
+                    this.selectedScheme = scheme;
+                });
             }
-            this.colorSchemes.push('light');
-            this.colorSchemes.push('dark');
-
-            this.configProvider.get(CoreConstants.SETTINGS_COLOR_SCHEME, defaultColorScheme).then((scheme) => {
-                this.selectedScheme = scheme;
-            });
         }
 
         // Sort them by name.

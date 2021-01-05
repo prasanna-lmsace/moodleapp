@@ -13,17 +13,18 @@
 // limitations under the License.
 
 import { Injectable, Injector } from '@angular/core';
-import { NavController } from 'ionic-angular';
+import { NavController, Loading } from 'ionic-angular';
 import { TranslateService } from '@ngx-translate/core';
 import { CoreAppProvider } from '@providers/app';
 import { CoreEventsProvider } from '@providers/events';
 import { CoreFileProvider } from '@providers/file';
-import { CoreFilepoolProvider } from '@providers/filepool';
+import { CoreFilepoolProvider, CoreFilepoolComponentFileEventData } from '@providers/filepool';
 import { CoreFileHelperProvider } from '@providers/file-helper';
 import { CoreSitesProvider } from '@providers/sites';
 import { CoreDomUtilsProvider } from '@providers/utils/dom';
 import { CoreTextUtilsProvider } from '@providers/utils/text';
 import { CoreTimeUtilsProvider } from '@providers/utils/time';
+import { CoreUrlUtils } from '@providers/utils/url';
 import { CoreUtilsProvider } from '@providers/utils/utils';
 import { CoreCourseOptionsDelegate, CoreCourseOptionsHandlerToDisplay,
     CoreCourseOptionsMenuHandlerToDisplay } from './options-delegate';
@@ -33,12 +34,14 @@ import { CoreCourseProvider } from './course';
 import { CoreCourseOfflineProvider } from './course-offline';
 import { CoreCourseModuleDelegate } from './module-delegate';
 import { CoreCourseModulePrefetchDelegate } from './module-prefetch-delegate';
-import { CoreLoginHelperProvider } from '@core/login/providers/helper';
+import { CoreLoginHelper, CoreLoginHelperProvider } from '@core/login/providers/helper';
 import { CoreConstants } from '@core/constants';
 import { CoreSite } from '@classes/site';
 import { CoreLoggerProvider } from '@providers/logger';
 import * as moment from 'moment';
 import { CoreFilterHelperProvider } from '@core/filter/providers/helper';
+import { CoreArray } from '@singletons/array';
+import { makeSingleton } from '@singletons/core.singletons';
 
 /**
  * Prefetch info of a module.
@@ -119,7 +122,6 @@ export class CoreCourseHelperProvider {
             private timeUtils: CoreTimeUtilsProvider,
             private utils: CoreUtilsProvider,
             private translate: TranslateService,
-            private loginHelper: CoreLoginHelperProvider,
             private courseOptionsDelegate: CoreCourseOptionsDelegate,
             private siteHomeProvider: CoreSiteHomeProvider,
             private eventsProvider: CoreEventsProvider,
@@ -408,16 +410,29 @@ export class CoreCourseHelperProvider {
      *
      * @param module Module to remove the files.
      * @param courseId Course ID the module belongs to.
+     * @param done Function to call when done. It will close the context menu.
      * @return Promise resolved when done.
      */
-    confirmAndRemoveFiles(module: any, courseId: number): Promise<any> {
-        return this.domUtils.showDeleteConfirm('core.course.confirmdeletemodulefiles').then(() => {
-            return this.prefetchDelegate.removeModuleFiles(module, courseId);
-        }).catch((error) => {
+    async confirmAndRemoveFiles(module: any, courseId: number, done?: () => void): Promise<void> {
+        let modal: Loading;
+
+        try {
+
+            await this.domUtils.showDeleteConfirm('core.course.confirmdeletestoreddata');
+
+            modal = this.domUtils.showModalLoading();
+
+            await this.removeModuleStoredData(module, courseId);
+
+            done && done();
+
+        } catch (error) {
             if (error) {
                 this.domUtils.showErrorModal(error);
             }
-        });
+        } finally {
+            modal && modal.dismiss();
+        }
     }
 
     /**
@@ -550,7 +565,7 @@ export class CoreCourseHelperProvider {
         siteId = siteId || this.sitesProvider.getCurrentSiteId();
 
         let promise;
-        if (files) {
+        if (files && files.length) {
             promise = Promise.resolve(files);
         } else {
             promise = this.courseProvider.loadModuleContents(module, courseId).then(() => {
@@ -564,6 +579,10 @@ export class CoreCourseHelperProvider {
                 return Promise.reject(this.utils.createFakeWSError('core.filenotfound', true));
             }
 
+            if (!this.fileHelper.isOpenableInApp(module.contents[0])) {
+                return this.fileHelper.showConfirmOpenUnsupportedFile();
+            }
+        }).then(() => {
             return this.sitesProvider.getSite(siteId);
         }).then((site) => {
             const mainFile = files[0],
@@ -593,7 +612,7 @@ export class CoreCourseHelperProvider {
                     // Not online, get the offline file. It will fail if not found.
                     return this.filepoolProvider.getInternalUrlByUrl(siteId, fileUrl).then((path) => {
                         return this.utils.openFile(path);
-                    }).catch((error) => {
+                    }, (error) => {
                         return Promise.reject(this.translate.instant('core.networkerrormsg'));
                     });
                 }
@@ -602,7 +621,8 @@ export class CoreCourseHelperProvider {
             // File shouldn't be opened in browser. Download the module if it needs to be downloaded.
             return this.downloadModuleWithMainFileIfNeeded(module, courseId, component, componentId, files, siteId)
                     .then((result) => {
-                if (result.path.indexOf('http') === 0) {
+
+                if (!CoreUrlUtils.instance.isLocalFileUrl(result.path)) {
                     /* In iOS, if we use the same URL in embedded browser and background download then the download only
                        downloads a few bytes (cached ones). Add a hash to the URL so both URLs are different. */
                     result.path = result.path + '#moodlemobile-embedded';
@@ -800,6 +820,8 @@ export class CoreCourseHelperProvider {
      * @return Promise resolved when done.
      */
     fillContextMenu(instance: any, module: any, courseId: number, invalidateCache?: boolean, component?: string): Promise<any> {
+        const siteId = this.sitesProvider.getCurrentSiteId();
+
         return this.getModulePrefetchInfo(module, courseId, invalidateCache, component).then((moduleInfo) => {
             instance.size = moduleInfo.size > 0 ? moduleInfo.sizeReadable : 0;
             instance.prefetchStatusIcon = moduleInfo.statusIcon;
@@ -815,12 +837,42 @@ export class CoreCourseHelperProvider {
                 }
             }
 
+            if (moduleInfo.status == CoreConstants.DOWNLOADING) {
+                // Set this to 0 to prevent "remove file" option showing up while downloading.
+                instance.size = 0;
+            }
+
             if (typeof instance.contextMenuStatusObserver == 'undefined' && component) {
                 instance.contextMenuStatusObserver = this.eventsProvider.on(CoreEventsProvider.PACKAGE_STATUS_CHANGED, (data) => {
                     if (data.componentId == module.id && data.component == component) {
                         this.fillContextMenu(instance, module, courseId, false, component);
                     }
-                }, this.sitesProvider.getCurrentSiteId());
+                }, siteId);
+            }
+
+            if (typeof instance.contextFileStatusObserver == 'undefined' && component) {
+                // Debounce the update size function to prevent too many calls when downloading or deleting a whole activity.
+                const debouncedUpdateSize = this.utils.debounce(() => {
+                    this.prefetchDelegate.getModuleStoredSize(module, courseId).then((moduleSize) => {
+                        instance.size = moduleSize > 0 ? this.textUtils.bytesToSize(moduleSize, 2) : 0;
+                    });
+                }, 1000);
+
+                instance.contextFileStatusObserver = this.eventsProvider.on(CoreEventsProvider.COMPONENT_FILE_ACTION,
+                        (data: CoreFilepoolComponentFileEventData) => {
+
+                    if (data.component != component || data.componentId != module.id) {
+                        // The event doesn't belong to this component, ignore.
+                        return;
+                    }
+
+                    if (!this.filepoolProvider.isFileEventDownloadedOrDeleted(data)) {
+                        return;
+                    }
+
+                    // Update the module size.
+                    debouncedUpdateSize();
+                }, siteId);
             }
         });
     }
@@ -1082,7 +1134,7 @@ export class CoreCourseHelperProvider {
             this.prefetchDelegate.invalidateModuleStatusCache(module);
         }
 
-        promises.push(this.prefetchDelegate.getModuleDownloadedSize(module, courseId).then((moduleSize) => {
+        promises.push(this.prefetchDelegate.getModuleStoredSize(module, courseId).then((moduleSize) => {
             moduleInfo.size = moduleSize;
             moduleInfo.sizeReadable = this.textUtils.bytesToSize(moduleSize, 2);
         }));
@@ -1224,14 +1276,17 @@ export class CoreCourseHelperProvider {
             // Get the module.
             return this.courseProvider.getModule(moduleId, courseId, sectionId, false, false, siteId, modName);
         }).then((module) => {
-            module.handlerData = this.moduleDelegate.getModuleDataFor(module.modname, module, courseId, sectionId, false);
 
-            if (navCtrl && module.handlerData && module.handlerData.action) {
+            if (navCtrl && this.sitesProvider.isLoggedIn() && this.sitesProvider.getCurrentSiteId() == site.getId()) {
                 // If the link handler for this module passed through navCtrl, we can use the module's handler to navigate cleanly.
                 // Otherwise, we will redirect below.
-                modal.dismiss();
+                module.handlerData = this.moduleDelegate.getModuleDataFor(module.modname, module, courseId, sectionId, false);
 
-                return module.handlerData.action(new Event('click'), navCtrl, module, courseId, undefined, modParams);
+                if (module.handlerData && module.handlerData.action) {
+                    modal.dismiss();
+
+                    return module.handlerData.action(new Event('click'), navCtrl, module, courseId, undefined, modParams);
+                }
             }
 
             this.logger.warn('navCtrl was not passed to navigateToModule by the link handler for ' + module.modname);
@@ -1246,14 +1301,14 @@ export class CoreCourseHelperProvider {
             if (courseId == site.getSiteHomeId()) {
                 // Check if site home is available.
                 return this.siteHomeProvider.isAvailable().then(() => {
-                    this.loginHelper.redirect('CoreSiteHomeIndexPage', params, siteId);
+                    CoreLoginHelper.instance.redirect('CoreSiteHomeIndexPage', params, siteId);
                 }).finally(() => {
                     modal.dismiss();
                 });
             } else {
                 modal.dismiss();
 
-                return this.getAndOpenCourse(undefined, courseId, params, siteId);
+                return this.getAndOpenCourse(navCtrl, courseId, params, siteId);
             }
         }).catch((error) => {
             modal.dismiss();
@@ -1545,7 +1600,7 @@ export class CoreCourseHelperProvider {
      * @param siteId Site ID. If not defined, current site.
      * @return Promise resolved when done.
      */
-    openCourse(navCtrl: NavController, course: any, params?: any, siteId?: string): Promise<any> {
+    openCourse(navCtrl: NavController, course: any, params?: any, siteId?: string): Promise<void> {
         if (!siteId || siteId == this.sitesProvider.getCurrentSiteId()) {
             // Current site, we can open the course.
             return this.courseProvider.openCourse(navCtrl, course, params);
@@ -1554,7 +1609,47 @@ export class CoreCourseHelperProvider {
             params = params || {};
             Object.assign(params, { course: course });
 
-            return this.loginHelper.redirect(CoreLoginHelperProvider.OPEN_COURSE, params, siteId);
+            return CoreLoginHelper.instance.redirect(CoreLoginHelperProvider.OPEN_COURSE, params, siteId);
         }
     }
+
+    /**
+     * Delete course files.
+     *
+     * @param courseId Course id.
+     * @return Promise to be resolved once the course files are deleted.
+     */
+    async deleteCourseFiles(courseId: number): Promise<void> {
+        const sections = await this.courseProvider.getSections(courseId);
+        const modules = CoreArray.flatten(sections.map((section) => section.modules));
+
+        await Promise.all(
+            modules.map((module) => this.removeModuleStoredData(module, courseId)),
+        );
+
+        await this.courseProvider.setCourseStatus(courseId, CoreConstants.NOT_DOWNLOADED);
+    }
+
+    /**
+     * Remove module stored data.
+     *
+     * @param module Module to remove the files.
+     * @param courseId Course ID the module belongs to.
+     * @return Promise resolved when done.
+     */
+    async removeModuleStoredData(module: any, courseId: number): Promise<void> {
+        const promises = [];
+
+        promises.push(this.prefetchDelegate.removeModuleFiles(module, courseId));
+
+        const handler = this.prefetchDelegate.getPrefetchHandlerFor(module);
+        if (handler) {
+            promises.push(this.sitesProvider.getCurrentSite().deleteComponentFromCache(handler.component, module.id));
+        }
+
+        await Promise.all(promises);
+    }
+
 }
+
+export class CoreCourseHelper extends makeSingleton(CoreCourseHelperProvider) {}

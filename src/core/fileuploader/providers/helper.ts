@@ -16,15 +16,18 @@ import { Injectable } from '@angular/core';
 import { ActionSheetController, ActionSheet, Platform, Loading } from 'ionic-angular';
 import { MediaFile } from '@ionic-native/media-capture';
 import { Camera, CameraOptions } from '@ionic-native/camera';
+import { Chooser, ChooserResult } from '@ionic-native/chooser';
 import { TranslateService } from '@ngx-translate/core';
-import { CoreAppProvider } from '@providers/app';
+import { CoreApp, CoreAppProvider } from '@providers/app';
 import { CoreFileProvider, CoreFileProgressEvent } from '@providers/file';
 import { CoreLoggerProvider } from '@providers/logger';
 import { CoreDomUtilsProvider } from '@providers/utils/dom';
+import { CoreMimetypeUtils } from '@providers/utils/mimetype';
 import { CoreTextUtilsProvider } from '@providers/utils/text';
 import { CoreUtilsProvider, PromiseDefer } from '@providers/utils/utils';
 import { CoreFileUploaderProvider, CoreFileUploaderOptions } from './fileuploader';
 import { CoreFileUploaderDelegate } from './delegate';
+import { CoreSites } from '@providers/sites';
 
 /**
  * Helper service to upload files.
@@ -36,12 +39,63 @@ export class CoreFileUploaderHelperProvider {
     protected filePickerDeferred: PromiseDefer;
     protected actionSheet: ActionSheet;
 
-    constructor(logger: CoreLoggerProvider, private appProvider: CoreAppProvider, private translate: TranslateService,
-            private fileUploaderProvider: CoreFileUploaderProvider, private domUtils: CoreDomUtilsProvider,
-            private textUtils: CoreTextUtilsProvider, private fileProvider: CoreFileProvider, private utils: CoreUtilsProvider,
-            private actionSheetCtrl: ActionSheetController, private uploaderDelegate: CoreFileUploaderDelegate,
-            private camera: Camera, private platform: Platform) {
+    constructor(logger: CoreLoggerProvider,
+            protected appProvider: CoreAppProvider,
+            protected translate: TranslateService,
+            protected fileUploaderProvider: CoreFileUploaderProvider,
+            protected domUtils: CoreDomUtilsProvider,
+            protected textUtils: CoreTextUtilsProvider,
+            protected fileProvider: CoreFileProvider,
+            protected utils: CoreUtilsProvider,
+            protected actionSheetCtrl: ActionSheetController,
+            protected uploaderDelegate: CoreFileUploaderDelegate,
+            protected camera: Camera,
+            protected platform: Platform,
+            protected fileChooser: Chooser) {
         this.logger = logger.getInstance('CoreFileUploaderProvider');
+    }
+
+    /**
+     * Choose any type of file and upload it.
+     *
+     * @param maxSize Max size of the upload. -1 for no max size.
+     * @param upload True if the file should be uploaded, false to return the picked file.
+     * @param mimetypes List of supported mimetypes. If undefined, all mimetypes supported.
+     * @param allowOffline True to allow uploading in offline.
+     * @return Promise resolved when done.
+     */
+    async chooseAndUploadFile(maxSize: number, upload?: boolean, allowOffline?: boolean, mimetypes?: string[]): Promise<any> {
+
+        const modal = this.domUtils.showModalLoading();
+
+        const result = await this.fileChooser.getFile(mimetypes ? mimetypes.join(',') : undefined);
+
+        modal.dismiss();
+
+        if (!result) {
+            // User canceled.
+            throw this.domUtils.createCanceledError();
+        }
+
+        if (result.name == 'File') {
+            // In some Android 4.4 devices the file name cannot be retrieved. Try to use the one from the URI.
+            result.name = this.getChosenFileNameFromPath(result) || result.name;
+        }
+
+        // Verify that the mimetype is supported.
+        const error = this.fileUploaderProvider.isInvalidMimetype(mimetypes, result.name, result.mediaType);
+
+        if (error) {
+            return Promise.reject(error);
+        }
+
+        const options = this.fileUploaderProvider.getFileUploadOptions(result.uri, result.name, result.mediaType, true);
+
+        if (upload) {
+            return this.uploadFile(result.uri, maxSize, true, options);
+        } else {
+            return this.copyToTmpFolder(result.uri, false, maxSize, undefined, options);
+        }
     }
 
     /**
@@ -106,7 +160,7 @@ export class CoreFileUploaderHelperProvider {
             this.logger.error('Error reading file to upload.', error);
             modal.dismiss();
 
-            return Promise.reject(this.translate.instant('core.fileuploader.errorreadingfile'));
+            return Promise.reject(error);
         }).then((fileEntry) => {
             modal.dismiss();
 
@@ -184,9 +238,7 @@ export class CoreFileUploaderHelperProvider {
             }
         });
 
-        this.domUtils.showErrorModal(errorMessage);
-
-        return Promise.reject(null);
+        return Promise.reject(errorMessage);
     }
 
     /**
@@ -213,6 +265,33 @@ export class CoreFileUploaderHelperProvider {
         if (this.actionSheet) {
             this.actionSheet.dismiss();
         }
+    }
+
+    /**
+     * Given the result of choosing a file, try to get its file name from the path.
+     *
+     * @param result Chosen file data.
+     * @return File name, undefined if cannot get it.
+     */
+    protected getChosenFileNameFromPath(result: ChooserResult): string {
+        const nameAndDir = this.fileProvider.getFileAndDirectoryFromPath(result.uri);
+
+        if (!nameAndDir.name) {
+            return;
+        }
+
+        let extension = CoreMimetypeUtils.instance.getFileExtension(nameAndDir.name);
+
+        if (!extension) {
+            // The URI doesn't have an extension, add it now.
+            extension = CoreMimetypeUtils.instance.getExtension(result.mediaType);
+
+            if (extension) {
+                nameAndDir.name += '.' + extension;
+            }
+        }
+
+        return decodeURIComponent(nameAndDir.name);
     }
 
     /**
@@ -319,9 +398,7 @@ export class CoreFileUploaderHelperProvider {
                         // Success uploading or picking, return the result.
                         this.fileUploaded(result);
                     }).catch((error) => {
-                        if (error) {
-                            this.domUtils.showErrorModal(error);
-                        }
+                        this.domUtils.showErrorModalDefault(error, this.translate.instant('core.fileuploader.errorreadingfile'));
                     });
 
                     // Do not close the action sheet, it will be closed if success.
@@ -380,34 +457,37 @@ export class CoreFileUploaderHelperProvider {
     /**
      * Treat a capture audio/video error.
      *
-     * @param error Error returned by the Cordova plugin. Can be a string or an object.
+     * @param error Error returned by the Cordova plugin.
      * @param defaultMessage Key of the default message to show.
-     * @return Rejected promise. If it doesn't have an error message it means it was cancelled.
+     * @return Rejected promise.
      */
-    protected treatCaptureError(error: any, defaultMessage: string): Promise<any> {
+    protected treatCaptureError(error: any, defaultMessage: string): void {
         // Cancelled or error. If cancelled, error is an object with code = 3.
         if (error) {
-            if (typeof error === 'string') {
-                this.logger.error('Error while recording audio/video: ' + error);
-                if (error.indexOf('No Activity found') > -1) {
-                    // User doesn't have an app to do this.
-                    return Promise.reject(this.translate.instant('core.fileuploader.errornoapp'));
-                } else {
-                    return Promise.reject(this.translate.instant(defaultMessage));
-                }
-            } else {
-                if (error.code != 3) {
-                    // Error, not cancelled.
-                    this.logger.error('Error while recording audio/video', error);
+            if (error.code != 3) {
+                // Error, not cancelled.
+                this.logger.error('Error while recording audio/video', error);
 
-                    return Promise.reject(this.translate.instant(defaultMessage));
-                } else {
-                    this.logger.debug('Cancelled');
-                }
+                const message = this.isNoAppError(error) ? this.translate.instant('core.fileuploader.errornoapp') :
+                        (error.message || this.translate.instant(defaultMessage));
+
+                throw new Error(message);
+            } else {
+                throw this.domUtils.createCanceledError();
             }
         }
 
-        return Promise.reject(null);
+        throw new Error('Error capturing media');
+    }
+
+    /**
+     * Check if a capture error is because there is no app to capture.
+     *
+     * @param error Error.
+     * @return Whether it's because there is no app.
+     */
+    protected isNoAppError(error: any): boolean {
+        return error && error.code == 20;
     }
 
     /**
@@ -421,20 +501,18 @@ export class CoreFileUploaderHelperProvider {
         // Cancelled or error.
         if (error) {
             if (typeof error == 'string') {
-                if (error.toLowerCase().indexOf('error') > -1 || error.toLowerCase().indexOf('unable') > -1) {
-                    this.logger.error('Error getting image: ' + error);
-
-                    return Promise.reject(error);
-                } else {
+                if (error.toLowerCase().indexOf('no image selected') > -1) {
                     // User cancelled.
-                    this.logger.debug('Cancelled');
+                    return Promise.reject(this.domUtils.createCanceledError());
                 }
             } else {
                 return Promise.reject(this.translate.instant(defaultMessage));
             }
         }
 
-        return Promise.reject(null);
+        this.logger.error('Error getting image: ', error);
+
+        return Promise.reject(error);
     }
 
     /**
@@ -446,41 +524,57 @@ export class CoreFileUploaderHelperProvider {
      * @param mimetypes List of supported mimetypes. If undefined, all mimetypes supported.
      * @return Promise resolved when done.
      */
-    uploadAudioOrVideo(isAudio: boolean, maxSize: number, upload?: boolean, mimetypes?: string[]): Promise<any> {
+    async uploadAudioOrVideo(isAudio: boolean, maxSize: number, upload?: boolean, mimetypes?: string[]): Promise<any> {
         this.logger.debug('Trying to record a ' + (isAudio ? 'audio' : 'video') + ' file');
 
-        const options = { limit: 1, mimetypes: mimetypes },
-            promise = isAudio ? this.fileUploaderProvider.captureAudio(options) : this.fileUploaderProvider.captureVideo(options);
-
         // The mimetypes param is only for desktop apps, the Cordova plugin doesn't support it.
-        return promise.then((medias) => {
-            // We used limit 1, we only want 1 media.
-            const media: MediaFile = medias[0];
-            let path = media.fullPath;
-            const error = this.fileUploaderProvider.isInvalidMimetype(mimetypes, path); // Verify that the mimetype is supported.
+        const captureOptions = { limit: 1, mimetypes: mimetypes };
+        let media: MediaFile;
 
-            if (error) {
-                return Promise.reject(error);
-            }
+        try {
+            const medias = isAudio ? await this.fileUploaderProvider.captureAudio(captureOptions) :
+                                     await this.fileUploaderProvider.captureVideo(captureOptions);
 
-            // Make sure the path has the protocol. In iOS it doesn't.
-            if (this.appProvider.isMobile() && path.indexOf('file://') == -1) {
-                path = 'file://' + path;
-            }
+            media = medias[0]; // We used limit 1, we only want 1 media.
+        } catch (error) {
 
-            const options = this.fileUploaderProvider.getMediaUploadOptions(media);
+            if (isAudio && this.isNoAppError(error) && this.appProvider.isMobile() &&
+                    (!this.platform.is('android') || this.platform.version().major < 10)) {
+                // No app to record audio, fallback to capture it ourselves.
+                // In Android it will only be done in Android 9 or lower because there's a bug in the plugin.
+                try {
+                    media = await this.fileUploaderProvider.captureAudioInApp();
+                } catch (error) {
+                    this.treatCaptureError(error, 'core.fileuploader.errorcapturingaudio'); // Throw the right error.
+                }
 
-            if (upload) {
-                return this.uploadFile(path, maxSize, true, options);
             } else {
-                // Copy or move the file to our temporary folder.
-                return this.copyToTmpFolder(path, true, maxSize, undefined, options);
-            }
-        }, (error) => {
-            const defaultError = isAudio ? 'core.fileuploader.errorcapturingaudio' : 'core.fileuploader.errorcapturingvideo';
+                const defaultError = isAudio ? 'core.fileuploader.errorcapturingaudio' : 'core.fileuploader.errorcapturingvideo';
 
-            return this.treatCaptureError(error, defaultError);
-        });
+                this.treatCaptureError(error, defaultError); // Throw the right error.
+            }
+        }
+
+        let path = media.fullPath;
+        const error = this.fileUploaderProvider.isInvalidMimetype(mimetypes, path); // Verify that the mimetype is supported.
+
+        if (error) {
+            throw new Error(error);
+        }
+
+        // Make sure the path has the protocol. In iOS it doesn't.
+        if (this.appProvider.isMobile() && path.indexOf('file://') == -1) {
+            path = 'file://' + path;
+        }
+
+        const options = this.fileUploaderProvider.getMediaUploadOptions(media);
+
+        if (upload) {
+            return this.uploadFile(path, maxSize, true, options);
+        } else {
+            // Copy or move the file to our temporary folder.
+            return this.copyToTmpFolder(path, true, maxSize, undefined, options);
+        }
     }
 
     /**
@@ -536,7 +630,7 @@ export class CoreFileUploaderHelperProvider {
                 options.mediaType = this.camera.MediaType.PICTURE;
             } else if (!imageSupported && videoSupported) {
                 options.mediaType = this.camera.MediaType.VIDEO;
-            } else if (this.platform.is('ios')) {
+            } else if (CoreApp.instance.isIOS()) {
                 // Only get all media in iOS because in Android using this option allows uploading any kind of file.
                 options.mediaType = this.camera.MediaType.ALLMEDIA;
             }
@@ -604,15 +698,26 @@ export class CoreFileUploaderHelperProvider {
      * @param name Name to use when uploading the file. If not defined, use the file's name.
      * @return Promise resolved when done.
      */
-    uploadFileObject(file: any, maxSize?: number, upload?: boolean, allowOffline?: boolean, name?: string): Promise<any> {
+    async uploadFileObject(file: any, maxSize?: number, upload?: boolean, allowOffline?: boolean, name?: string): Promise<any> {
+        if (maxSize === 0) {
+            const currentSite = CoreSites.instance.getCurrentSite();
+            const siteInfo = currentSite && currentSite.getInfo();
+
+            if (siteInfo && siteInfo.usermaxuploadfilesize) {
+                maxSize = siteInfo.usermaxuploadfilesize;
+            }
+        }
+
         if (maxSize != -1 && file.size > maxSize) {
             return this.errorMaxBytes(maxSize, file.name);
         }
 
-        return this.confirmUploadFile(file.size, false, allowOffline).then(() => {
-            // We have the data of the file to be uploaded, but not its URL (needed). Create a copy of the file to upload it.
-            return this.copyAndUploadFile(file, upload, name);
-        });
+        if (upload) {
+            await this.confirmUploadFile(file.size, false, allowOffline);
+        }
+
+        // We have the data of the file to be uploaded, but not its URL (needed). Create a copy of the file to upload it.
+        return this.copyAndUploadFile(file, upload, name);
     }
 
     /**
@@ -625,7 +730,7 @@ export class CoreFileUploaderHelperProvider {
      * @param siteId Site ID. If not defined, current site.
      * @return Promise resolved if the file is uploaded, rejected otherwise.
      */
-    protected uploadFile(path: string, maxSize: number, checkSize: boolean, options: CoreFileUploaderOptions, siteId?: string)
+    uploadFile(path: string, maxSize: number, checkSize: boolean, options: CoreFileUploaderOptions, siteId?: string)
             : Promise<any> {
 
         const errorStr = this.translate.instant('core.error'),
@@ -642,7 +747,7 @@ export class CoreFileUploaderHelperProvider {
                         this.fileProvider.removeExternalFile(path);
                     }
 
-                    return Promise.reject(null);
+                    return Promise.reject(this.domUtils.createCanceledError());
                 });
             };
 

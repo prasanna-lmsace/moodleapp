@@ -14,14 +14,15 @@
 
 import { Injector } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
-import { HttpClient } from '@angular/common/http';
 import { SQLiteDB } from './sqlitedb';
 import { CoreAppProvider } from '@providers/app';
 import { CoreDbProvider } from '@providers/db';
 import { CoreEventsProvider } from '@providers/events';
 import { CoreFileProvider } from '@providers/file';
 import { CoreLoggerProvider } from '@providers/logger';
-import { CoreWSProvider, CoreWSPreSets, CoreWSFileUploadOptions, CoreWSAjaxPreSets } from '@providers/ws';
+import {
+    CoreWSProvider, CoreWSPreSets, CoreWSFileUploadOptions, CoreWSAjaxPreSets, CoreWSPreSetsSplitRequest
+} from '@providers/ws';
 import { CoreDomUtilsProvider } from '@providers/utils/dom';
 import { CoreTextUtilsProvider } from '@providers/utils/text';
 import { CoreTimeUtilsProvider } from '@providers/utils/time';
@@ -128,6 +129,23 @@ export interface CoreSiteWSPreSets {
      * Defaults to CoreSite.FREQUENCY_USUALLY.
      */
     updateFrequency?: number;
+
+    /**
+     * Component name. Optionally included if this request is being made on behalf of a specific
+     * component (e.g. activity).
+     */
+    component?: string;
+
+    /**
+     * Component id. Optionally included when 'component' is set.
+     */
+    componentId?: number;
+
+    /**
+     * Whether to split a request if it has too many parameters. Sending too many parameters to the site
+     * can cause the request to fail (see PHP's max_input_vars).
+     */
+    splitRequest?: CoreWSPreSetsSplitRequest;
 }
 
 /**
@@ -170,7 +188,7 @@ interface RequestQueueItem {
 /**
  * Class that represents a site (combination of site + user).
  * It will have all the site data and provide utility functions regarding a site.
- * To add tables to the site's database, please use CoreSitesProvider.createTablesFromSchema. This will make sure that
+ * To add tables to the site's database, please use CoreSitesProvider.registerSiteSchema. This will make sure that
  * the tables are created in all the sites, not just the current one.
  */
 export class CoreSite {
@@ -190,7 +208,6 @@ export class CoreSite {
     protected domUtils: CoreDomUtilsProvider;
     protected eventsProvider: CoreEventsProvider;
     protected fileProvider: CoreFileProvider;
-    protected http: HttpClient;
     protected textUtils: CoreTextUtilsProvider;
     protected timeUtils: CoreTimeUtilsProvider;
     protected translate: TranslateService;
@@ -199,18 +216,21 @@ export class CoreSite {
     protected wsProvider: CoreWSProvider;
 
     // Variables for the database.
-    static WS_CACHE_TABLE = 'wscache';
+    static WS_CACHE_TABLE = 'wscache_2';
     static CONFIG_TABLE = 'core_site_config';
 
     // Versions of Moodle releases.
     protected MOODLE_RELEASES = {
-        3.1: 2016052300,
-        3.2: 2016120500,
-        3.3: 2017051503,
-        3.4: 2017111300,
-        3.5: 2018051700,
-        3.6: 2018120300,
-        3.7: 2019052000
+        '3.1': 2016052300,
+        '3.2': 2016120500,
+        '3.3': 2017051503,
+        '3.4': 2017111300,
+        '3.5': 2018051700,
+        '3.6': 2018120300,
+        '3.7': 2019052000,
+        '3.8': 2019111800,
+        '3.9': 2020061500,
+        '3.10': 2020092400, // @todo: Replace with the right value once 3.10 is released.
     };
     static MINIMUM_MOODLE_VERSION = '3.1';
 
@@ -233,6 +253,7 @@ export class CoreSite {
     protected requestQueueTimeout = null;
     protected tokenPluginFileWorks: boolean;
     protected tokenPluginFileWorksPromise: Promise<boolean>;
+    protected oauthId: number;
 
     /**
      * Create a site.
@@ -255,7 +276,6 @@ export class CoreSite {
         this.domUtils = injector.get(CoreDomUtilsProvider);
         this.eventsProvider = injector.get(CoreEventsProvider);
         this.fileProvider = injector.get(CoreFileProvider);
-        this.http = injector.get(HttpClient);
         this.textUtils = injector.get(CoreTextUtilsProvider);
         this.timeUtils = injector.get(CoreTimeUtilsProvider);
         this.translate = injector.get(TranslateService);
@@ -405,6 +425,15 @@ export class CoreSite {
     }
 
     /**
+     * Get OAuth ID.
+     *
+     * @return OAuth ID.
+     */
+    getOAuthId(): number {
+        return this.oauthId;
+    }
+
+    /**
      * Set site info.
      *
      * @param New info.
@@ -442,6 +471,24 @@ export class CoreSite {
      */
     setLoggedOut(loggedOut: boolean): void {
         this.loggedOut = !!loggedOut;
+    }
+
+    /**
+     * Set OAuth ID.
+     *
+     * @param oauth OAuth ID.
+     */
+    setOAuthId(oauthId: number): void {
+        this.oauthId = oauthId;
+    }
+
+    /**
+     * Check if the user authenticated in the site using an OAuth method.
+     *
+     * @return {boolean} Whether the user authenticated in the site using an OAuth method.
+     */
+    isOAuth(): boolean {
+        return this.oauthId != null && typeof this.oauthId != 'undefined';
     }
 
     /**
@@ -614,7 +661,8 @@ export class CoreSite {
             siteUrl: this.siteUrl,
             cleanUnicode: this.cleanUnicode,
             typeExpected: preSets.typeExpected,
-            responseExpected: preSets.responseExpected
+            responseExpected: preSets.responseExpected,
+            splitRequest: preSets.splitRequest,
         };
 
         if (wsPreSets.cleanUnicode && this.textUtils.hasUnicodeData(data)) {
@@ -1065,6 +1113,25 @@ export class CoreSite {
     }
 
     /**
+     * Gets the size of cached data for a specific component or component instance.
+     *
+     * @param component Component name
+     * @param componentId Optional component id (if not included, returns sum for whole component)
+     * @return Promise resolved when we have calculated the size
+     */
+    getComponentCacheSize(component: string, componentId?: number): Promise<number> {
+        const params: any[] = [component];
+        let extraClause = '';
+        if (componentId !== undefined && componentId !== null) {
+            params.push(componentId);
+            extraClause = ' AND componentId = ?';
+        }
+
+        return this.db.getFieldSql('SELECT SUM(length(data)) FROM ' + CoreSite.WS_CACHE_TABLE +
+                ' WHERE component = ?' + extraClause, params);
+    }
+
+    /**
      * Save a WS response to cache.
      *
      * @param method The WebService method.
@@ -1103,6 +1170,13 @@ export class CoreSite {
                 entry.key = preSets.cacheKey;
             }
 
+            if (preSets.component) {
+                entry.component = preSets.component;
+                if (preSets.componentId) {
+                    entry.componentId = preSets.componentId;
+                }
+            }
+
             return this.db.insertRecord(CoreSite.WS_CACHE_TABLE, entry);
         });
     }
@@ -1128,6 +1202,33 @@ export class CoreSite {
         }
 
         return this.db.deleteRecords(CoreSite.WS_CACHE_TABLE, { id: id });
+    }
+
+    /**
+     * Deletes WS cache entries for all methods relating to a specific component (and
+     * optionally component id).
+     *
+     * @param component Component name.
+     * @param componentId Component id.
+     * @return Promise resolved when the entries are deleted.
+     */
+    async deleteComponentFromCache(component: string, componentId?: number): Promise<void> {
+        if (!component) {
+            return;
+        }
+
+        if (!this.db) {
+            throw new Error('Site DB not initialized');
+        }
+
+        const params = {
+            component: component
+        } as any;
+        if (componentId) {
+            params.componentId = componentId;
+        }
+
+        return this.db.deleteRecords(CoreSite.WS_CACHE_TABLE, params);
     }
 
     /*
@@ -1300,6 +1401,29 @@ export class CoreSite {
     }
 
     /**
+     * Gets an approximation of the cache table usage of the site.
+     *
+     * Currently this is just the total length of the data fields in the cache table.
+     *
+     * @return Promise resolved with the total size of all data in the cache table (bytes)
+     */
+    getCacheUsage(): Promise<number> {
+        return this.db.getFieldSql('SELECT SUM(length(data)) FROM ' + CoreSite.WS_CACHE_TABLE);
+    }
+
+    /**
+     * Gets a total of the file and cache usage.
+     *
+     * @return Promise with the total of getSpaceUsage and getCacheUsage
+     */
+    async getTotalUsage(): Promise<number> {
+        const space = await this.getSpaceUsage();
+        const cache = await this.getCacheUsage();
+
+        return space + cache;
+    }
+
+    /**
      * Returns the URL to the documentation of the app, based on Moodle version and current language.
      *
      * @param page Docs page to go to.
@@ -1329,55 +1453,67 @@ export class CoreSite {
      * @param retrying True if we're retrying the check.
      * @return Promise resolved when the check is done.
      */
-    checkLocalMobilePlugin(retrying?: boolean): Promise<LocalMobileResponse> {
+    async checkLocalMobilePlugin(retrying?: boolean): Promise<LocalMobileResponse> {
         const checkUrl = this.siteUrl + '/local/mobile/check.php',
             service = CoreConfigConstants.wsextservice;
 
         if (!service) {
             // External service not defined.
-            return Promise.resolve({ code: 0 });
+            return { code: 0 };
         }
 
-        const promise = this.http.post(checkUrl, { service: service }).timeout(this.wsProvider.getRequestTimeout()).toPromise();
+        let data;
 
-        return promise.then((data: any) => {
-            if (typeof data != 'undefined' && data.errorcode === 'requirecorrectaccess') {
-                if (!retrying) {
-                    this.siteUrl = this.urlUtils.addOrRemoveWWW(this.siteUrl);
+        try {
+            const response = await this.wsProvider.sendHTTPRequest(checkUrl, {
+                method: 'post',
+                data: { service: service },
+            });
 
-                    return this.checkLocalMobilePlugin(true);
-                } else {
-                    return Promise.reject(data.error);
-                }
-            } else if (typeof data == 'undefined' || typeof data.code == 'undefined') {
-                // The local_mobile returned something we didn't expect. Let's assume it's not installed.
-                return { code: 0, warning: 'core.login.localmobileunexpectedresponse' };
-            }
-
-            const code = parseInt(data.code, 10);
-            if (data.error) {
-                switch (code) {
-                    case 1:
-                        // Site in maintenance mode.
-                        return Promise.reject(this.translate.instant('core.login.siteinmaintenance'));
-                    case 2:
-                        // Web services not enabled.
-                        return Promise.reject(this.translate.instant('core.login.webservicesnotenabled'));
-                    case 3:
-                        // Extended service not enabled, but the official is enabled.
-                        return { code: 0 };
-                    case 4:
-                        // Neither extended or official services enabled.
-                        return Promise.reject(this.translate.instant('core.login.mobileservicesnotenabled'));
-                    default:
-                        return Promise.reject(this.translate.instant('core.unexpectederror'));
-                }
-            } else {
-                return { code: code, service: service, coreSupported: !!data.coresupported };
-            }
-        }, () => {
+            data = response.body;
+        } catch (ex) {
             return { code: 0 };
-        });
+        }
+
+        if (data === null) {
+            // This probably means that the server was configured to return null for non-existing URLs. Not installed.
+            return { code: 0 };
+        }
+
+        if (typeof data != 'undefined' && data.errorcode === 'requirecorrectaccess') {
+            if (!retrying) {
+                this.siteUrl = this.urlUtils.addOrRemoveWWW(this.siteUrl);
+
+                return this.checkLocalMobilePlugin(true);
+            } else {
+                throw data.error;
+            }
+        } else if (typeof data == 'undefined' || typeof data.code == 'undefined') {
+            // The local_mobile returned something we didn't expect. Let's assume it's not installed.
+            return { code: 0, warning: 'core.login.localmobileunexpectedresponse' };
+        }
+
+        const code = parseInt(data.code, 10);
+        if (data.error) {
+            switch (code) {
+                case 1:
+                    // Site in maintenance mode.
+                    throw this.translate.instant('core.login.siteinmaintenance');
+                case 2:
+                    // Web services not enabled.
+                    throw this.translate.instant('core.login.webservicesnotenabled');
+                case 3:
+                    // Extended service not enabled, but the official is enabled.
+                    return { code: 0 };
+                case 4:
+                    // Neither extended or official services enabled.
+                    throw this.translate.instant('core.login.mobileservicesnotenabled');
+                default:
+                    throw this.translate.instant('core.unexpectederror');
+            }
+        } else {
+            return { code: code, service: service, coreSupported: !!data.coresupported };
+        }
     }
 
     /**
@@ -1783,7 +1919,7 @@ export class CoreSite {
 
             this.lastAutoLogin = this.timeUtils.timestamp();
 
-            return data.autologinurl + '?userid=' + userId + '&key=' + data.key + '&urltogo=' + url;
+            return data.autologinurl + '?userid=' + userId + '&key=' + data.key + '&urltogo=' + encodeURIComponent(url);
         }).catch(() => {
 
             // Couldn't get autologin key, return the same URL.
@@ -1942,7 +2078,7 @@ export class CoreSite {
         url = this.fixPluginfileURL(url);
 
         this.tokenPluginFileWorksPromise = this.wsProvider.performHead(url).then((result) => {
-            return result.ok;
+            return result.status >= 200 && result.status < 300;
         }).catch((error) => {
             // Error performing head request.
             return false;

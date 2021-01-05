@@ -114,7 +114,7 @@ export class CoreCoursesHelperProvider {
             promises = [],
             colors = [];
 
-        if (site.isVersionGreaterEqualThan('3.8')) {
+        if (site && site.isVersionGreaterEqualThan('3.8')) {
             promises.push(site.getConfig().then((configs) => {
                 for (let x = 0; x < 10; x++) {
                     colors[x] = configs['core_admin_coursecolor' + (x + 1)] || null;
@@ -210,6 +210,14 @@ export class CoreCoursesHelperProvider {
                     case 'timemodified':
                         courses.sort((a, b) => {
                             return b.timemodified - a.timemodified;
+                        });
+                        break;
+                    case 'shortname':
+                        courses.sort((a, b) => {
+                            const compareA = a.shortname.toLowerCase(),
+                                compareB = b.shortname.toLowerCase();
+
+                            return compareA.localeCompare(compareB);
                         });
                         break;
                     default:

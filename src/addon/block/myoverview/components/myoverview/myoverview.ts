@@ -17,7 +17,7 @@ import { Searchbar } from 'ionic-angular';
 import { CoreEventsProvider } from '@providers/events';
 import { CoreTimeUtilsProvider } from '@providers/utils/time';
 import { CoreSitesProvider } from '@providers/sites';
-import { CoreCoursesProvider } from '@core/courses/providers/courses';
+import { CoreCoursesProvider, CoreCoursesMyCoursesUpdatedEventData } from '@core/courses/providers/courses';
 import { CoreCoursesHelperProvider } from '@core/courses/providers/helper';
 import { CoreCourseHelperProvider } from '@core/course/providers/helper';
 import { CoreCourseOptionsDelegate } from '@core/course/providers/options-delegate';
@@ -77,12 +77,14 @@ export class AddonBlockMyOverviewComponent extends CoreBlockBaseComponent implem
     downloadCourseEnabled: boolean;
     downloadCoursesEnabled: boolean;
 
+    protected FILTER_PRIORITY = ['all', 'allincludinghidden', 'inprogress', 'future', 'past', 'favourite', 'hidden', 'custom'];
     protected prefetchIconsInitialized = false;
     protected isDestroyed;
     protected coursesObserver;
     protected updateSiteObserver;
     protected courseIds = [];
     protected fetchContentDefaultError = 'Error getting my overview data.';
+    protected showSortByShortName = false;
 
     constructor(injector: Injector,
             protected coursesProvider: CoreCoursesProvider,
@@ -112,8 +114,12 @@ export class AddonBlockMyOverviewComponent extends CoreBlockBaseComponent implem
 
         }, this.sitesProvider.getCurrentSiteId());
 
-        this.coursesObserver = this.eventsProvider.on(CoreCoursesProvider.EVENT_MY_COURSES_UPDATED, () => {
-            this.refreshContent();
+        this.coursesObserver = this.eventsProvider.on(CoreCoursesProvider.EVENT_MY_COURSES_UPDATED,
+                (data: CoreCoursesMyCoursesUpdatedEventData) => {
+
+            if (data.action == CoreCoursesProvider.ACTION_ENROL || data.action == CoreCoursesProvider.ACTION_STATE_CHANGED) {
+                this.refreshCourseList();
+            }
         }, this.sitesProvider.getCurrentSiteId());
 
         this.currentSite = this.sitesProvider.getCurrentSite();
@@ -151,12 +157,9 @@ export class AddonBlockMyOverviewComponent extends CoreBlockBaseComponent implem
 
         promises.push(this.coursesProvider.invalidateUserCourses().finally(() => {
             // Invalidate course completion data.
-            promises.push(this.coursesProvider.invalidateUserCourses().finally(() => {
-                // Invalidate course completion data.
-                return this.utils.allPromises(this.courseIds.map((courseId) => {
-                    return this.courseCompletionProvider.invalidateCourseCompletion(courseId);
-                 }));
-            }));
+            return this.utils.allPromises(this.courseIds.map((courseId) => {
+                return this.courseCompletionProvider.invalidateCourseCompletion(courseId);
+             }));
         }));
 
         promises.push(this.courseOptionsDelegate.clearAndInvalidateCoursesOptions());
@@ -180,6 +183,18 @@ export class AddonBlockMyOverviewComponent extends CoreBlockBaseComponent implem
         const showCategories = config && config.displaycategories && config.displaycategories.value == '1';
 
         return this.coursesHelper.getUserCoursesWithOptions(this.sort, null, null, showCategories).then((courses) => {
+            // Check to show sort by short name only if the text is visible.
+            if (courses.length > 0) {
+                const sampleCourse = courses[0];
+                this.showSortByShortName = sampleCourse.displayname && sampleCourse.shortname &&
+                    sampleCourse.fullname != sampleCourse.displayname;
+            }
+
+            // Rollback to sort by full name if user is sorting by short name then Moodle web change the config.
+            if (!this.showSortByShortName && this.sort === 'shortname') {
+                this.switchSort('fullname');
+            }
+
             this.courseIds = courses.map((course) => {
                     return course.id;
                 });
@@ -187,9 +202,6 @@ export class AddonBlockMyOverviewComponent extends CoreBlockBaseComponent implem
             this.showSortFilter = courses.length > 0 && typeof courses[0].lastaccess != 'undefined';
 
             this.initCourseFilters(courses);
-
-            this.showSelectorFilter = courses.length > 0 && (this.courses.past.length > 0 || this.courses.future.length > 0 ||
-                   typeof courses[0].enddate != 'undefined');
 
             this.courses.filter = '';
             this.showFilter = false;
@@ -218,7 +230,8 @@ export class AddonBlockMyOverviewComponent extends CoreBlockBaseComponent implem
 
             this.showFilters.favourite = this.getShowFilterValue(
                 this.showSelectorFilter && typeof courses[0].isfavourite != 'undefined' &&
-                    (!config || config.displaygroupingstarred.value == '1'),
+                    (!config || (config.displaygroupingstarred && config.displaygroupingstarred.value == '1') ||
+                        (config.displaygroupingfavourites && config.displaygroupingfavourites.value == '1')),
                 this.courses.favourite.length === 0);
 
             this.showFilters.custom = this.getShowFilterValue(this.showSelectorFilter && config &&
@@ -235,10 +248,15 @@ export class AddonBlockMyOverviewComponent extends CoreBlockBaseComponent implem
                 this.showSelectorFilter = Object.keys(this.showFilters).some((key) => {
                     return this.showFilters[key] == 'show';
                 });
+
+                if (!this.showSelectorFilter) {
+                    // All filters disabled, display all the courses.
+                    this.showFilters.all = 'show';
+                }
             }
 
-            if (!this.showSelectorFilter || (this.selectedFilter === 'inprogress' && this.showFilters.inprogress == 'disabled')) {
-                // No selector, or the default option is disabled, show all.
+            if (!this.showSelectorFilter) {
+                // No selector, display all the courses.
                 this.selectedFilter = 'all';
             }
             this.setCourseFilter(this.selectedFilter);
@@ -318,6 +336,23 @@ export class AddonBlockMyOverviewComponent extends CoreBlockBaseComponent implem
     }
 
     /**
+     * Refresh the list of courses.
+     *
+     * @return Promise resolved when done.
+     */
+    protected async refreshCourseList(): Promise<void> {
+        this.eventsProvider.trigger(CoreCoursesProvider.EVENT_MY_COURSES_REFRESHED);
+
+        try {
+            await this.coursesProvider.invalidateUserCourses();
+        } catch (error) {
+            // Ignore errors.
+        }
+
+        await this.loadContent(true);
+    }
+
+    /**
      * The selected courses filter have changed.
      */
     selectedChanged(): void {
@@ -356,7 +391,7 @@ export class AddonBlockMyOverviewComponent extends CoreBlockBaseComponent implem
             if (this.showFilters[filter] == 'show') {
                 this.filteredCourses = this.courses[filter];
             } else {
-                const activeFilter = Object.keys(this.showFilters).find((name) => {
+                const activeFilter = this.FILTER_PRIORITY.find((name) => {
                     return this.showFilters[name] == 'show';
                 });
 
@@ -376,7 +411,7 @@ export class AddonBlockMyOverviewComponent extends CoreBlockBaseComponent implem
         this.courses.allincludinghidden = courses;
 
         if (this.showSortFilter) {
-                if (this.sort == 'lastaccess') {
+            if (this.sort == 'lastaccess') {
                 courses.sort((a, b) => {
                     return b.lastaccess - a.lastaccess;
                 });
@@ -384,6 +419,14 @@ export class AddonBlockMyOverviewComponent extends CoreBlockBaseComponent implem
                 courses.sort((a, b) => {
                     const compareA = a.fullname.toLowerCase(),
                         compareB = b.fullname.toLowerCase();
+
+                    return compareA.localeCompare(compareB);
+                });
+            } else if (this.sort == 'shortname') {
+                courses.sort((a, b) => {
+                    const compareA = a.shortname.toLowerCase(),
+                        compareB = b.shortname.toLowerCase();
+                    compareA.localeCompare();
 
                     return compareA.localeCompare(compareB);
                 });

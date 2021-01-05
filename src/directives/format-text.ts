@@ -17,7 +17,6 @@ import {
 } from '@angular/core';
 import { Platform, NavController, Content } from 'ionic-angular';
 import { TranslateService } from '@ngx-translate/core';
-import { CoreAppProvider } from '@providers/app';
 import { CoreEventsProvider } from '@providers/events';
 import { CoreFilepoolProvider } from '@providers/filepool';
 import { CoreLoggerProvider } from '@providers/logger';
@@ -35,6 +34,7 @@ import { CoreSplitViewComponent } from '@components/split-view/split-view';
 import { CoreFilterProvider, CoreFilterFilter, CoreFilterFormatTextOptions } from '@core/filter/providers/filter';
 import { CoreFilterHelperProvider } from '@core/filter/providers/helper';
 import { CoreFilterDelegate } from '@core/filter/providers/delegate';
+import { CoreCustomURLSchemesProvider } from '@providers/urlschemes';
 
 /**
  * Directive to format text rendered. It renders the HTML and treats all links and media, using CoreLinkDirective
@@ -74,26 +74,27 @@ export class CoreFormatTextDirective implements OnChanges {
     protected loadingChangedListener;
 
     constructor(element: ElementRef,
-            private sitesProvider: CoreSitesProvider,
-            private domUtils: CoreDomUtilsProvider,
-            private textUtils: CoreTextUtilsProvider,
-            private translate: TranslateService,
-            private platform: Platform,
-            private utils: CoreUtilsProvider,
-            private urlUtils: CoreUrlUtilsProvider,
-            private loggerProvider: CoreLoggerProvider,
-            private filepoolProvider: CoreFilepoolProvider,
-            private appProvider: CoreAppProvider,
-            private contentLinksHelper: CoreContentLinksHelperProvider,
-            @Optional() private navCtrl: NavController,
-            @Optional() private content: Content, @Optional()
-            private svComponent: CoreSplitViewComponent,
-            private iframeUtils: CoreIframeUtilsProvider,
-            private eventsProvider: CoreEventsProvider,
-            private filterProvider: CoreFilterProvider,
-            private filterHelper: CoreFilterHelperProvider,
-            private filterDelegate: CoreFilterDelegate,
-            private viewContainerRef: ViewContainerRef) {
+            protected sitesProvider: CoreSitesProvider,
+            protected domUtils: CoreDomUtilsProvider,
+            protected textUtils: CoreTextUtilsProvider,
+            protected translate: TranslateService,
+            protected platform: Platform,
+            protected utils: CoreUtilsProvider,
+            protected urlUtils: CoreUrlUtilsProvider,
+            protected loggerProvider: CoreLoggerProvider,
+            protected filepoolProvider: CoreFilepoolProvider,
+            protected contentLinksHelper: CoreContentLinksHelperProvider,
+            @Optional() protected navCtrl: NavController,
+            @Optional() protected content: Content, @Optional()
+            @Optional() protected svComponent: CoreSplitViewComponent,
+            protected iframeUtils: CoreIframeUtilsProvider,
+            protected eventsProvider: CoreEventsProvider,
+            protected filterProvider: CoreFilterProvider,
+            protected filterHelper: CoreFilterHelperProvider,
+            protected filterDelegate: CoreFilterDelegate,
+            protected viewContainerRef: ViewContainerRef,
+            protected urlSchemesProvider: CoreCustomURLSchemesProvider
+            ) {
 
         this.element = element.nativeElement;
         this.element.classList.add('opacity-hide'); // Hide contents until they're treated.
@@ -106,7 +107,7 @@ export class CoreFormatTextDirective implements OnChanges {
      * Detect changes on input properties.
      */
     ngOnChanges(changes: { [name: string]: SimpleChange }): void {
-        if (changes.text) {
+        if (changes.text || changes.filter || changes.contextLevel || changes.contextInstanceId) {
             this.hideShowMore();
             this.formatAndRenderContents();
         }
@@ -118,16 +119,16 @@ export class CoreFormatTextDirective implements OnChanges {
      * @param element Element to add the attributes to.
      * @return External content instance.
      */
-    protected addExternalContent(element: HTMLElement): CoreExternalContentDirective {
+    protected addExternalContent(element: Element): CoreExternalContentDirective {
         // Angular 2 doesn't let adding directives dynamically. Create the CoreExternalContentDirective manually.
-        const extContent = new CoreExternalContentDirective(<any> element, this.loggerProvider, this.filepoolProvider,
-            this.platform, this.sitesProvider, this.domUtils, this.urlUtils, this.appProvider, this.utils);
+        const extContent = new CoreExternalContentDirective(new ElementRef(element), this.loggerProvider, this.filepoolProvider,
+            this.platform, this.sitesProvider, this.domUtils, this.urlUtils, this.utils);
 
         extContent.component = this.component;
         extContent.componentId = this.componentId;
         extContent.siteId = this.siteId;
         extContent.src = element.getAttribute('src');
-        extContent.href = element.getAttribute('href');
+        extContent.href = element.getAttribute('href') || element.getAttribute('xlink:href');
         extContent.targetSrc = element.getAttribute('target-src');
         extContent.poster = element.getAttribute('poster');
 
@@ -210,7 +211,7 @@ export class CoreFormatTextDirective implements OnChanges {
             }
 
             const imgSrc = this.textUtils.escapeHTML(img.getAttribute('data-original-src') || img.getAttribute('src')),
-            label = this.textUtils.escapeHTML(this.translate.instant('core.openfullimage')),
+            label = this.translate.instant('core.openfullimage'),
             anchor = document.createElement('a');
 
             anchor.classList.add('core-image-viewer-icon');
@@ -221,7 +222,7 @@ export class CoreFormatTextDirective implements OnChanges {
             anchor.addEventListener('click', (e: Event) => {
                 e.preventDefault();
                 e.stopPropagation();
-                this.domUtils.viewImage(imgSrc, img.getAttribute('alt'), this.component, this.componentId);
+                this.domUtils.viewImage(imgSrc, img.getAttribute('alt'), this.component, this.componentId, true);
             });
 
             img.parentNode.appendChild(anchor);
@@ -302,10 +303,16 @@ export class CoreFormatTextDirective implements OnChanges {
             return;
         } else {
             // Open a new state with the contents.
-            const filter = this.utils.isTrueOrOne(this.filter);
+            const filter = typeof this.filter != 'undefined' ? this.utils.isTrueOrOne(this.filter) : undefined;
 
-            this.textUtils.expandText(this.fullTitle || this.translate.instant('core.description'), this.text,
-                this.component, this.componentId, undefined, filter, this.contextLevel, this.contextInstanceId, this.courseId);
+            this.textUtils.viewText(this.fullTitle || this.translate.instant('core.description'), this.text, {
+                component: this.component,
+                componentId: this.componentId,
+                filter: filter,
+                contextLevel: this.contextLevel,
+                instanceId: this.contextInstanceId,
+                courseId: this.courseId,
+            });
         }
     }
 
@@ -345,7 +352,8 @@ export class CoreFormatTextDirective implements OnChanges {
             this.element.classList.add('core-disable-media-adapt');
 
             this.element.innerHTML = ''; // Remove current contents.
-            if (this.maxHeight && result.div.innerHTML != '') {
+            if (this.maxHeight && result.div.innerHTML != '' &&
+                    (this.fullOnClick || (window.innerWidth < 576 || window.innerHeight < 576))) { // Don't collapse in big screens.
 
                 // Move the children to the current element to be able to calculate the height.
                 this.domUtils.moveChildren(result.div, this.element);
@@ -413,7 +421,8 @@ export class CoreFormatTextDirective implements OnChanges {
                 this.contextInstanceId = site.getSiteHomeId();
             }
 
-            this.filter = typeof this.filter == 'undefined' ? !!(this.contextLevel && this.contextInstanceId) : !!this.filter;
+            const filter = typeof this.filter == 'undefined' ?
+                    !!(this.contextLevel && typeof this.contextInstanceId != 'undefined') : this.utils.isTrueOrOne(this.filter);
 
             result.options = {
                 clean: this.utils.isTrueOrOne(this.clean),
@@ -423,7 +432,7 @@ export class CoreFormatTextDirective implements OnChanges {
                 wsNotFiltered: this.utils.isTrueOrOne(this.wsNotFiltered)
             };
 
-            if (this.filter) {
+            if (filter) {
                 return this.filterHelper.getFiltersAndFormatText(this.text, this.contextLevel, this.contextInstanceId,
                         result.options, result.siteId).then((res) => {
 
@@ -436,36 +445,34 @@ export class CoreFormatTextDirective implements OnChanges {
             }
 
         }).then((formatted) => {
+            formatted = this.treatWindowOpen(formatted);
+
             const div = document.createElement('div'),
                 canTreatVimeo = site && site.isVersionGreaterEqualThan(['3.3.4', '3.4']),
                 navCtrl = this.svComponent ? this.svComponent.getMasterNav() : this.navCtrl;
-            let images,
-                anchors,
-                audios,
-                videos,
-                iframes,
-                buttons,
-                elementsWithInlineStyles,
-                stopClicksElements,
-                frames;
+            const promises = [];
 
             div.innerHTML = formatted;
-            images = Array.from(div.querySelectorAll('img'));
-            anchors = Array.from(div.querySelectorAll('a'));
-            audios = Array.from(div.querySelectorAll('audio'));
-            videos = Array.from(div.querySelectorAll('video'));
-            iframes = Array.from(div.querySelectorAll('iframe'));
-            buttons = Array.from(div.querySelectorAll('.button'));
-            elementsWithInlineStyles = Array.from(div.querySelectorAll('*[style]'));
-            stopClicksElements = Array.from(div.querySelectorAll('button,input,select,textarea'));
-            frames = Array.from(div.querySelectorAll(CoreIframeUtilsProvider.FRAME_TAGS.join(',').replace(/iframe,?/, '')));
+
+            const images = Array.from(div.querySelectorAll('img'));
+            const anchors = Array.from(div.querySelectorAll('a'));
+            const audios = Array.from(div.querySelectorAll('audio'));
+            const videos = Array.from(div.querySelectorAll('video'));
+            const iframes = Array.from(div.querySelectorAll('iframe'));
+            const buttons = Array.from(div.querySelectorAll('.button'));
+            const elementsWithInlineStyles = Array.from(div.querySelectorAll('*[style]'));
+            const stopClicksElements = Array.from(div.querySelectorAll('button,input,select,textarea'));
+            const frames = Array.from(div.querySelectorAll(CoreIframeUtilsProvider.FRAME_TAGS.join(',').replace(/iframe,?/, '')));
+            const svgImages = Array.from(div.querySelectorAll('image'));
 
             // Walk through the content to find the links and add our directive to it.
             // Important: We need to look for links first because in 'img' we add new links without core-link.
             anchors.forEach((anchor) => {
                 // Angular 2 doesn't let adding directives dynamically. Create the CoreLinkDirective manually.
-                const linkDir = new CoreLinkDirective(anchor, this.domUtils, this.utils, this.sitesProvider, this.urlUtils,
-                    this.contentLinksHelper, this.navCtrl, this.content, this.svComponent, this.textUtils);
+                const elementRef = new ElementRef(anchor);
+
+                const linkDir = new CoreLinkDirective(elementRef, this.domUtils, this.utils, this.sitesProvider, this.urlUtils,
+                    this.contentLinksHelper, this.navCtrl, this.content, this.svComponent, this.textUtils, this.urlSchemesProvider);
                 linkDir.capture = true;
                 linkDir.ngOnInit();
 
@@ -498,7 +505,11 @@ export class CoreFormatTextDirective implements OnChanges {
             });
 
             iframes.forEach((iframe) => {
-                this.treatIframe(iframe, site, canTreatVimeo, navCtrl);
+                promises.push(this.treatIframe(iframe, site, canTreatVimeo, navCtrl));
+            });
+
+            svgImages.forEach((image) => {
+                this.addExternalContent(image);
             });
 
             // Handle buttons with inner links.
@@ -533,10 +544,9 @@ export class CoreFormatTextDirective implements OnChanges {
             this.domUtils.handleBootstrapTooltips(div);
 
             // Wait for images to load.
-            let promise: Promise<any> = null;
             if (externalImages.length) {
                 // Automatically reject the promise after 5 seconds to prevent blocking the user forever.
-                promise = this.utils.timeoutPromise(this.utils.allPromises(externalImages.map((externalImage): any => {
+                promises.push(this.utils.timeoutPromise(this.utils.allPromises(externalImages.map((externalImage): any => {
                     if (externalImage.loaded) {
                         // Image has already been loaded, no need to wait.
                         return Promise.resolve();
@@ -548,12 +558,10 @@ export class CoreFormatTextDirective implements OnChanges {
                             resolve();
                         });
                     });
-                })), 5000);
-            } else {
-                promise = Promise.resolve();
+                })), 5000));
             }
 
-            return promise.catch(() => {
+            return Promise.all(promises).catch(() => {
                 // Ignore errors. So content gets always shown.
             }).then(() => {
                 result.div = div;
@@ -655,7 +663,8 @@ export class CoreFormatTextDirective implements OnChanges {
      * @param canTreatVimeo Whether Vimeo videos can be treated in the site.
      * @param navCtrl NavController to use.
      */
-    protected treatIframe(iframe: HTMLIFrameElement, site: CoreSite, canTreatVimeo: boolean, navCtrl: NavController): void {
+    protected async treatIframe(iframe: HTMLIFrameElement, site: CoreSite, canTreatVimeo: boolean, navCtrl: NavController)
+            : Promise<void> {
         const src = iframe.src,
             currentSite = this.sitesProvider.getCurrentSite();
 
@@ -663,14 +672,18 @@ export class CoreFormatTextDirective implements OnChanges {
 
         if (currentSite && currentSite.containsUrl(src)) {
             // URL points to current site, try to use auto-login.
-            currentSite.getAutoLoginUrl(src, false).then((finalUrl) => {
-                iframe.src = finalUrl;
+            const finalUrl = await currentSite.getAutoLoginUrl(src, false);
 
-                this.iframeUtils.treatFrame(iframe, false, navCtrl);
-            });
+            await this.iframeUtils.fixIframeCookies(finalUrl);
+
+            iframe.src = finalUrl;
+
+            this.iframeUtils.treatFrame(iframe, false, navCtrl);
 
             return;
         }
+
+        await this.iframeUtils.fixIframeCookies(src);
 
         if (src && canTreatVimeo) {
             // Check if it's a Vimeo video. If it is, use the wsplayer script instead to make restricted videos work.
@@ -701,9 +714,12 @@ export class CoreFormatTextDirective implements OnChanges {
                 }
 
                 // Width and height parameters are required in 3.6 and older sites.
-                if (!site.isVersionGreaterEqualThan('3.7')) {
+                if (site && !site.isVersionGreaterEqualThan('3.7')) {
                     newUrl += '&width=' + width + '&height=' + height;
                 }
+
+                await this.iframeUtils.fixIframeCookies(newUrl);
+
                 iframe.src = newUrl;
 
                 if (!iframe.width) {
@@ -728,5 +744,27 @@ export class CoreFormatTextDirective implements OnChanges {
         }
 
         this.iframeUtils.treatFrame(iframe, false, navCtrl);
+    }
+
+    /**
+     * Convert window.open to window.openWindowSafely inside HTML tags.
+     *
+     * @param text Text to treat.
+     * @return Treated text.
+     */
+    protected treatWindowOpen(text: string): string {
+        // Get HTML tags that include window.open. Script tags aren't executed so there's no need to treat them.
+        const matches = text.match(/<[^>]+window\.open\([^\)]*\)[^>]*>/g);
+
+        if (matches) {
+            matches.forEach((match) => {
+                // Replace all the window.open inside the tag.
+                const treated = match.replace(/window\.open\(/g, 'window.openWindowSafely(');
+
+                text = text.replace(match, treated);
+            });
+        }
+
+        return text;
     }
 }

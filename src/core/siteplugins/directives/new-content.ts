@@ -54,6 +54,7 @@ export class CoreSitePluginsNewContentDirective implements OnInit {
     @Input() jsData: any; // JS variables to pass to the new page so they can be used in the template or JS.
                           // If true is supplied instead of an object, all initial variables from current page will be copied.
     @Input() preSets: any; // The preSets for the WS call of the new content.
+    @Input() ptrEnabled: boolean | string; // Whether PTR should be enabled in the new page. Defaults to true.
 
     protected element: HTMLElement;
 
@@ -84,7 +85,7 @@ export class CoreSitePluginsNewContentDirective implements OnInit {
             if (this.utils.isTrueOrOne(this.samePage)) {
                 // Update the parent content (if it exists).
                 if (this.parentContent) {
-                    this.parentContent.updateContent(args, this.component, this.method, this.jsData);
+                    this.parentContent.updateContent(args, this.component, this.method, this.jsData, this.preSets);
                 }
             } else {
                 let jsData = this.jsData;
@@ -99,7 +100,8 @@ export class CoreSitePluginsNewContentDirective implements OnInit {
                     args: args,
                     initResult: this.parentContent && this.parentContent.initResult,
                     jsData: jsData,
-                    preSets: this.preSets
+                    preSets: this.preSets,
+                    ptrEnabled: this.ptrEnabled,
                 });
             }
         });

@@ -32,8 +32,10 @@ export class AddonMessagesSettingsHandler implements CoreSettingsHandler {
      *
      * @return Whether or not the handler is enabled on a site level.
      */
-    isEnabled(): boolean | Promise<boolean> {
-        return this.messagesProvider.isMessagePreferencesEnabled();
+    async isEnabled(): Promise<boolean> {
+        const messagingEnabled = await this.messagesProvider.isPluginEnabled();
+
+        return messagingEnabled && this.messagesProvider.isMessagePreferencesEnabled();
     }
 
     /**
@@ -44,9 +46,9 @@ export class AddonMessagesSettingsHandler implements CoreSettingsHandler {
     getDisplayData(): CoreSettingsHandlerData {
         return {
             icon: 'chatbubbles',
-            title: 'addon.messages.messagepreferences',
+            title: 'addon.messages.messages',
             page: 'AddonMessagesSettingsPage',
-            class: 'addon-messages-settings-handler'
+            class: 'addon-messages-settings-handler',
         };
     }
 

@@ -15,7 +15,7 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Script for converting a PHP WS structure to a TS type.
+ * Script for detecting changes in a WS params or return data, version by version.
  *
  * The first parameter (required) is the path to the Moodle installation to use.
  * The second parameter (required) is the name to the WS to convert.
@@ -37,7 +37,7 @@ if (!isset($argv[2])) {
 define('CLI_SCRIPT', true);
 require_once('ws_to_ts_functions.php');
 
-$versions = array('master', '37', '36', '35', '34', '33', '32', '31');
+$versions = array('master', '38', '37', '36', '35', '34', '33', '32', '31');
 
 $moodlespath = $argv[1];
 $wsname = $argv[2];

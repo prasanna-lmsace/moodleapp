@@ -14,12 +14,14 @@
 
 import { Injectable } from '@angular/core';
 import { Platform } from 'ionic-angular';
-import { CoreAppProvider } from '@providers/app';
+import { CoreApp } from '@providers/app';
 import { CoreDomUtilsProvider } from '@providers/utils/dom';
 import { CoreTimeUtilsProvider } from '@providers/utils/time';
 import { CoreFileUploaderHandler, CoreFileUploaderHandlerData } from './delegate';
 import { CoreFileUploaderHelperProvider } from './helper';
 import { CoreFileUploaderProvider } from './fileuploader';
+import { TranslateService } from '@ngx-translate/core';
+
 /**
  * Handler to upload any type of file.
  */
@@ -28,9 +30,13 @@ export class CoreFileUploaderFileHandler implements CoreFileUploaderHandler {
     name = 'CoreFileUploaderFile';
     priority = 1200;
 
-    constructor(private appProvider: CoreAppProvider, private platform: Platform, private timeUtils: CoreTimeUtilsProvider,
-            private uploaderHelper: CoreFileUploaderHelperProvider, private uploaderProvider: CoreFileUploaderProvider,
-            private domUtils: CoreDomUtilsProvider) { }
+    constructor(
+            protected platform: Platform,
+            protected timeUtils: CoreTimeUtilsProvider,
+            protected uploaderHelper: CoreFileUploaderHelperProvider,
+            protected uploaderProvider: CoreFileUploaderProvider,
+            protected domUtils: CoreDomUtilsProvider,
+            protected translate: TranslateService) { }
 
     /**
      * Whether or not the handler is enabled on a site level.
@@ -38,8 +44,7 @@ export class CoreFileUploaderFileHandler implements CoreFileUploaderHandler {
      * @return True or promise resolved with true if enabled.
      */
     isEnabled(): boolean | Promise<boolean> {
-        return this.platform.is('android') || !this.appProvider.isMobile() ||
-            (this.platform.is('ios') && this.platform.version().major >= 9);
+        return true;
     }
 
     /**
@@ -58,13 +63,24 @@ export class CoreFileUploaderFileHandler implements CoreFileUploaderHandler {
      * @return Data.
      */
     getData(): CoreFileUploaderHandlerData {
-        const isIOS = this.platform.is('ios');
-
-        return {
-            title: isIOS ? 'core.fileuploader.more' : 'core.fileuploader.file',
+        const handler: CoreFileUploaderHandlerData = {
+            title: 'core.fileuploader.file',
             class: 'core-fileuploader-file-handler',
-            icon: isIOS ? 'more' : 'folder',
-            afterRender: (maxSize: number, upload: boolean, allowOffline: boolean, mimetypes: string[]): void => {
+            icon: 'folder',
+        };
+
+        if (CoreApp.instance.isMobile()) {
+            handler.action = (maxSize?: number, upload?: boolean, allowOffline?: boolean, mimetypes?: string[]): Promise<any> => {
+                return this.uploaderHelper.chooseAndUploadFile(maxSize, upload, allowOffline, mimetypes).then((result) => {
+                    return {
+                        treated: true,
+                        result: result
+                    };
+                });
+            };
+
+        } else {
+            handler.afterRender = (maxSize: number, upload: boolean, allowOffline: boolean, mimetypes: string[]): void => {
                 // Add an invisible file input in the file handler.
                 // It needs to be done like this because the action sheet items don't accept inputs.
                 const element = document.querySelector('.core-fileuploader-file-handler');
@@ -72,14 +88,13 @@ export class CoreFileUploaderFileHandler implements CoreFileUploaderHandler {
                     const input = document.createElement('input');
                     input.setAttribute('type', 'file');
                     input.classList.add('core-fileuploader-file-handler-input');
-                    if (mimetypes && mimetypes.length && (!this.platform.is('android') || mimetypes.length == 1)) {
+                    if (mimetypes && mimetypes.length && (!CoreApp.instance.isAndroid() || mimetypes.length == 1)) {
                         // Don't use accept attribute in Android with several mimetypes, it's not supported.
                         input.setAttribute('accept', mimetypes.join(', '));
                     }
 
                     input.addEventListener('change', (evt: Event) => {
                         const file = input.files[0];
-                        let fileName;
 
                         input.value = ''; // Unset input.
                         if (!file) {
@@ -94,26 +109,16 @@ export class CoreFileUploaderFileHandler implements CoreFileUploaderHandler {
                             return;
                         }
 
-                        fileName = file.name;
-                        if (isIOS) {
-                            // Check the name of the file and add a timestamp if needed (take picture).
-                            const matches = fileName.match(/image\.(jpe?g|png)/);
-                            if (matches) {
-                                fileName = 'image_' + this.timeUtils.readableTimestamp() + '.' + matches[1];
-                            }
-                        }
-
                         // Upload the picked file.
-                        this.uploaderHelper.uploadFileObject(file, maxSize, upload, allowOffline, fileName).then((result) => {
+                        this.uploaderHelper.uploadFileObject(file, maxSize, upload, allowOffline, file.name).then((result) => {
                             this.uploaderHelper.fileUploaded(result);
                         }).catch((error) => {
-                            if (error) {
-                                this.domUtils.showErrorModal(error);
-                            }
+                            this.domUtils.showErrorModalDefault(error,
+                                    this.translate.instant('core.fileuploader.errorreadingfile'));
                         });
                     });
 
-                    if (this.platform.is('ios')) {
+                    if (CoreApp.instance.isIOS()) {
                         // In iOS, the click on the input stopped working for some reason. We need to put it 1 level higher.
                         element.parentElement.appendChild(input);
 
@@ -130,7 +135,9 @@ export class CoreFileUploaderFileHandler implements CoreFileUploaderHandler {
                         element.appendChild(input);
                     }
                 }
-            }
-        };
+            };
+        }
+
+        return handler;
     }
 }

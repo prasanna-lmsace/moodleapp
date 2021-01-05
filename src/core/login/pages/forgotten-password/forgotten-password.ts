@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Component } from '@angular/core';
-import { IonicPage, NavController, NavParams } from 'ionic-angular';
+import { Component, ViewChild, ElementRef } from '@angular/core';
+import { IonicPage, NavController, NavParams, Platform } from 'ionic-angular';
 import { TranslateService } from '@ngx-translate/core';
+import { CoreEventsProvider } from '@providers/events';
+import { CoreSitesProvider } from '@providers/sites';
 import { CoreDomUtilsProvider } from '@providers/utils/dom';
 import { CoreLoginHelperProvider } from '../../providers/helper';
 import { FormBuilder, FormGroup, Validators } from '@angular/forms';
@@ -28,13 +30,25 @@ import { FormBuilder, FormGroup, Validators } from '@angular/forms';
     templateUrl: 'forgotten-password.html',
 })
 export class CoreLoginForgottenPasswordPage {
+
+    @ViewChild('resetPasswordForm') formElement: ElementRef;
+
     myForm: FormGroup;
     siteUrl: string;
+    autoFocus: boolean;
 
-    constructor(private navCtrl: NavController, navParams: NavParams, fb: FormBuilder, private translate: TranslateService,
-            private loginHelper: CoreLoginHelperProvider, private domUtils: CoreDomUtilsProvider) {
+    constructor(protected navCtrl: NavController,
+            navParams: NavParams,
+            fb: FormBuilder,
+            platform: Platform,
+            protected translate: TranslateService,
+            protected loginHelper: CoreLoginHelperProvider,
+            protected domUtils: CoreDomUtilsProvider,
+            protected eventsProvider: CoreEventsProvider,
+            protected sitesProvider: CoreSitesProvider) {
 
         this.siteUrl = navParams.get('siteUrl');
+        this.autoFocus = platform.is('tablet');
         this.myForm = fb.group({
             field: ['username', Validators.required],
             value: [navParams.get('username') || '', Validators.required]
@@ -71,6 +85,8 @@ export class CoreLoginForgottenPasswordPage {
                 this.domUtils.showErrorModal(response.notice);
             } else {
                 // Success.
+                this.domUtils.triggerFormSubmittedEvent(this.formElement, true);
+
                 this.domUtils.showAlert(this.translate.instant('core.success'), response.notice);
                 this.navCtrl.pop();
             }

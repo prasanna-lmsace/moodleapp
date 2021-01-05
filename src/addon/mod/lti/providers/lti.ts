@@ -16,13 +16,15 @@ import { Injectable } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 import { CoreAppProvider } from '@providers/app';
 import { CoreFileProvider } from '@providers/file';
-import { CoreSitesProvider } from '@providers/sites';
+import { CoreSitesProvider, CoreSitesCommonWSOptions } from '@providers/sites';
 import { CoreTextUtilsProvider } from '@providers/utils/text';
 import { CoreUtilsProvider } from '@providers/utils/utils';
 import { CoreUrlUtilsProvider } from '@providers/utils/url';
 import { CoreCourseLogHelperProvider } from '@core/course/providers/log-helper';
 import { CoreSite } from '@classes/site';
 import { CoreWSExternalWarning, CoreWSExternalFile } from '@providers/ws';
+
+import { makeSingleton } from '@singletons/core.singletons';
 
 /**
  * Service that provides some features for LTI.
@@ -59,9 +61,9 @@ export class AddonModLtiProvider {
      * @param params Launch params.
      * @return Promise resolved with the file URL.
      */
-    generateLauncher(url: string, params: AddonModLtiParam[]): Promise<string> {
+    async generateLauncher(url: string, params: AddonModLtiParam[]): Promise<string> {
         if (!this.fileProvider.isAvailable()) {
-            return Promise.resolve(url);
+            return url;
         }
 
         // Generate a form with the params.
@@ -84,13 +86,13 @@ export class AddonModLtiProvider {
             '    }; \n' +
             '</script> \n';
 
-        return this.fileProvider.writeFile(this.LAUNCHER_FILE_NAME, text).then((entry) => {
-            if (this.appProvider.isDesktop()) {
-                return entry.toInternalURL();
-            } else {
-                return entry.toURL();
-            }
-        });
+        const entry = await this.fileProvider.writeFile(this.LAUNCHER_FILE_NAME, text);
+
+        if (this.appProvider.isDesktop()) {
+            return entry.toInternalURL();
+        } else {
+            return entry.toURL();
+        }
     }
 
     /**
@@ -98,29 +100,32 @@ export class AddonModLtiProvider {
      *
      * @param courseId Course ID.
      * @param cmId Course module ID.
+     * @param options Other options.
      * @return Promise resolved when the LTI is retrieved.
      */
-    getLti(courseId: number, cmId: number): Promise<AddonModLtiLti> {
+    async getLti(courseId: number, cmId: number, options: CoreSitesCommonWSOptions = {}): Promise<AddonModLtiLti> {
         const params: any = {
             courseids: [courseId]
         };
-        const preSets: any = {
+        const preSets = {
             cacheKey: this.getLtiCacheKey(courseId),
-            updateFrequency: CoreSite.FREQUENCY_RARELY
+            updateFrequency: CoreSite.FREQUENCY_RARELY,
+            component: AddonModLtiProvider.COMPONENT,
+            ...this.sitesProvider.getReadingStrategyPreSets(options.readingStrategy), // Include reading strategy preSets.
         };
 
-        return this.sitesProvider.getCurrentSite().read('mod_lti_get_ltis_by_courses', params, preSets)
-                .then((response: AddonModLtiGetLtisByCoursesResult): any => {
+        const site = await this.sitesProvider.getSite(options.siteId);
 
-            if (response.ltis) {
-                const currentLti = response.ltis.find((lti) => lti.coursemodule == cmId);
-                if (currentLti) {
-                    return currentLti;
-                }
+        const response: AddonModLtiGetLtisByCoursesResult = await site.read('mod_lti_get_ltis_by_courses', params, preSets);
+
+        if (response.ltis) {
+            const currentLti = response.ltis.find((lti) => lti.coursemodule == cmId);
+            if (currentLti) {
+                return currentLti;
             }
+        }
 
-            return Promise.reject(null);
-        });
+        throw new Error('Activity not found.');
     }
 
     /**
@@ -194,26 +199,50 @@ export class AddonModLtiProvider {
     }
 
     /**
+     * Check if open in InAppBrowser is disabled.
+     *
+     * @param siteId Site ID. If not defined, current site.
+     * @return Promise resolved with boolean: whether it's disabled.
+     */
+    async isOpenInAppBrowserDisabled(siteId?: string): Promise<boolean> {
+        const site = await this.sitesProvider.getSite(siteId);
+
+        return this.isOpenInAppBrowserDisabledInSite(site);
+    }
+
+    /**
+     * Check if open in InAppBrowser is disabled.
+     *
+     * @param site Site. If not defined, current site.
+     * @return Whether it's disabled.
+     */
+    isOpenInAppBrowserDisabledInSite(site?: CoreSite): boolean {
+        site = site || this.sitesProvider.getCurrentSite();
+
+        return site.isFeatureDisabled('CoreCourseModuleDelegate_AddonModLti:openInAppBrowser');
+    }
+
+    /**
      * Launch LTI.
      *
      * @param url Launch URL.
      * @param params Launch params.
      * @return Promise resolved when the WS call is successful.
      */
-    launch(url: string, params: AddonModLtiParam[]): Promise<any> {
+    async launch(url: string, params: AddonModLtiParam[]): Promise<void> {
         if (!this.urlUtils.isHttpURL(url)) {
-            return Promise.reject(this.translate.instant('addon.mod_lti.errorinvalidlaunchurl'));
+            throw this.translate.instant('addon.mod_lti.errorinvalidlaunchurl');
         }
 
         // Generate launcher and open it.
-        return this.generateLauncher(url, params).then((url) => {
-            if (this.appProvider.isMobile()) {
-                this.utils.openInApp(url);
-            } else {
-                // In desktop open in browser, we found some cases where inapp caused JS issues.
-                this.utils.openInBrowser(url);
-            }
-        });
+        const launcherUrl = await this.generateLauncher(url, params);
+
+        if (this.appProvider.isMobile()) {
+            this.utils.openInApp(launcherUrl);
+        } else {
+            // In desktop open in browser, we found some cases where inapp caused JS issues.
+            this.utils.openInBrowser(launcherUrl);
+        }
     }
 
     /**
@@ -232,6 +261,8 @@ export class AddonModLtiProvider {
         return this.logHelper.logSingle('mod_lti_view_lti', params, AddonModLtiProvider.COMPONENT, id, name, 'lti', {}, siteId);
     }
 }
+
+export class AddonModLti extends makeSingleton(AddonModLtiProvider) {}
 
 /**
  * LTI returned by mod_lti_get_ltis_by_courses.

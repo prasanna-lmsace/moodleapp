@@ -20,6 +20,7 @@ import { Platform, Config } from 'ionic-angular';
 import { CoreAppProvider } from '@providers/app';
 import { CoreConfigProvider } from './config';
 import { CoreConfigConstants } from '../configconstants';
+import { makeSingleton } from '@singletons/core.singletons';
 
 /*
  * Service to handle language features, like changing the current language.
@@ -54,7 +55,9 @@ export class CoreLangProvider {
 
         translate.onLangChange.subscribe((event: any) => {
             platform.setLang(event.lang, true);
-            platform.setDir(this.translate.instant('core.thisdirection'), true);
+
+            const dir = this.translate.instant('core.thisdirection');
+            platform.setDir(dir.indexOf('rtl') != -1 ? 'rtl' : 'ltr', true);
         });
     }
 
@@ -453,3 +456,5 @@ export class CoreLangProvider {
         }
     }
 }
+
+export class CoreLang extends makeSingleton(CoreLangProvider) {}

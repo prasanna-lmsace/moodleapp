@@ -14,7 +14,7 @@
 
 import { Component, OnDestroy, ViewChild, ChangeDetectorRef } from '@angular/core';
 import { IonicPage, NavController, NavParams } from 'ionic-angular';
-import { CoreAppProvider } from '@providers/app';
+import { CoreApp } from '@providers/app';
 import { CoreSitesProvider } from '@providers/sites';
 import { CoreEventsProvider } from '@providers/events';
 import { CoreIonTabsComponent } from '@components/ion-tabs/ion-tabs';
@@ -45,15 +45,23 @@ export class CoreMainMenuPage implements OnDestroy {
     protected pendingRedirect: any;
     protected urlToOpen: string;
     protected mainMenuId: number;
+    protected keyboardObserver: any;
+    protected resizeFunction;
 
     @ViewChild('mainTabs') mainTabs: CoreIonTabsComponent;
 
-    constructor(private menuDelegate: CoreMainMenuDelegate, private sitesProvider: CoreSitesProvider, navParams: NavParams,
-            private navCtrl: NavController, private eventsProvider: CoreEventsProvider, private cdr: ChangeDetectorRef,
-            private mainMenuProvider: CoreMainMenuProvider, private linksDelegate: CoreContentLinksDelegate,
-            private linksHelper: CoreContentLinksHelperProvider, private appProvider: CoreAppProvider) {
+    constructor(protected menuDelegate: CoreMainMenuDelegate,
+            protected sitesProvider: CoreSitesProvider,
+            navParams: NavParams,
+            protected navCtrl: NavController,
+            protected eventsProvider: CoreEventsProvider,
+            protected cdr: ChangeDetectorRef,
+            protected mainMenuProvider: CoreMainMenuProvider,
+            protected linksDelegate: CoreContentLinksDelegate,
+            protected linksHelper: CoreContentLinksHelperProvider,
+            ) {
 
-        this.mainMenuId = this.appProvider.getMainMenuId();
+        this.mainMenuId = CoreApp.instance.getMainMenuId();
 
         // Check if the menu was loaded with a redirect.
         const redirectPage = navParams.get('redirectPage');
@@ -108,9 +116,25 @@ export class CoreMainMenuPage implements OnDestroy {
             }
         });
 
-        window.addEventListener('resize', this.initHandlers.bind(this));
+        this.resizeFunction = this.initHandlers.bind(this);
+        window.addEventListener('resize', this.resizeFunction);
 
-        this.appProvider.setMainMenuOpen(this.mainMenuId, true);
+        if (CoreApp.instance.isIOS()) {
+            // In iOS, the resize event is triggered before the keyboard is opened/closed and not triggered again once done.
+            // Init handlers again once keyboard is closed since the resize event doesn't have the updated height.
+            this.keyboardObserver = this.eventsProvider.on(CoreEventsProvider.KEYBOARD_CHANGE, (kbHeight) => {
+                if (kbHeight === 0) {
+                    this.initHandlers();
+
+                    // If the device is slow it can take a bit more to update the window height. Retry in a few ms.
+                    setTimeout(() => {
+                        this.initHandlers();
+                    }, 250);
+                }
+            });
+        }
+
+        CoreApp.instance.setMainMenuOpen(this.mainMenuId, true);
     }
 
     /**
@@ -219,7 +243,8 @@ export class CoreMainMenuPage implements OnDestroy {
     ngOnDestroy(): void {
         this.subscription && this.subscription.unsubscribe();
         this.redirectObs && this.redirectObs.off();
-        window.removeEventListener('resize', this.initHandlers.bind(this));
-        this.appProvider.setMainMenuOpen(this.mainMenuId, false);
+        window.removeEventListener('resize', this.resizeFunction);
+        CoreApp.instance.setMainMenuOpen(this.mainMenuId, false);
+        this.keyboardObserver && this.keyboardObserver.off();
     }
 }

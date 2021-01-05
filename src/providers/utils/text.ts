@@ -14,9 +14,22 @@
 
 import { Injectable } from '@angular/core';
 import { DomSanitizer, SafeUrl } from '@angular/platform-browser';
-import { ModalController, Platform } from 'ionic-angular';
+import { ModalController, ModalOptions } from 'ionic-angular';
 import { TranslateService } from '@ngx-translate/core';
 import { CoreLangProvider } from '../lang';
+import { makeSingleton } from '@singletons/core.singletons';
+import { CoreApp } from '../app';
+import { CoreWSExternalFile } from '../ws';
+
+/**
+ * Different type of errors the app can treat.
+ */
+export type CoreTextErrorObject = {
+    message?: string;
+    error?: string;
+    content?: string;
+    body?: string;
+};
 
 /*
  * "Utils" service with helper functions for text.
@@ -55,6 +68,7 @@ export class CoreTextUtilsProvider {
         {old: /_mmaModFolder/g, new: '_AddonModFolder'},
         {old: /_mmaModForum/g, new: '_AddonModForum'},
         {old: /_mmaModGlossary/g, new: '_AddonModGlossary'},
+        {old: /_mmaModH5pactivity/g, new: '_AddonModH5PActivity'},
         {old: /_mmaModImscp/g, new: '_AddonModImscp'},
         {old: /_mmaModLabel/g, new: '_AddonModLabel'},
         {old: /_mmaModLesson/g, new: '_AddonModLesson'},
@@ -72,8 +86,12 @@ export class CoreTextUtilsProvider {
 
     protected template = document.createElement('template'); // A template element to convert HTML to element.
 
-    constructor(private translate: TranslateService, private langProvider: CoreLangProvider, private modalCtrl: ModalController,
-            private sanitizer: DomSanitizer, private platform: Platform) { }
+    constructor(
+            private translate: TranslateService,
+            private langProvider: CoreLangProvider,
+            private modalCtrl: ModalController,
+            private sanitizer: DomSanitizer
+            ) { }
 
     /**
      * Add ending slash from a path or URL.
@@ -94,13 +112,40 @@ export class CoreTextUtilsProvider {
     }
 
     /**
+     * Add some text to an error message.
+     *
+     * @param error Error message or object.
+     * @param text Text to add.
+     * @return Modified error.
+     */
+    addTextToError(error: string | CoreTextErrorObject, text: string): string | CoreTextErrorObject {
+        if (typeof error == 'string') {
+            return error + text;
+        }
+
+        if (error) {
+            if (typeof error.message == 'string') {
+                error.message += text;
+            } else if (typeof error.error == 'string') {
+                error.error += text;
+            } else if (typeof error.content == 'string') {
+                error.content += text;
+            } else if (typeof error.body == 'string') {
+                error.body += text;
+            }
+        }
+
+        return error;
+    }
+
+    /**
      * Given an address as a string, return a URL to open the address in maps.
      *
      * @param address The address.
      * @return URL to view the address.
      */
     buildAddressURL(address: string): SafeUrl {
-        return this.sanitizer.bypassSecurityTrustUrl((this.platform.is('android') ? 'geo:0,0?q=' : 'http://maps.google.com?q=') +
+        return this.sanitizer.bypassSecurityTrustUrl((CoreApp.instance.isAndroid() ? 'geo:0,0?q=' : 'http://maps.google.com?q=') +
                 encodeURIComponent(address));
     }
 
@@ -120,6 +165,38 @@ export class CoreTextUtilsProvider {
         });
 
         return result;
+    }
+
+    /**
+     * Build a message with several paragraphs.
+     *
+     * @param paragraphs List of paragraphs.
+     * @return Built message.
+     */
+    buildSeveralParagraphsMessage(paragraphs: (string | CoreTextErrorObject)[]): string {
+        // Filter invalid messages, and convert them to messages in case they're errors.
+        const messages: string[] = [];
+
+        paragraphs.forEach((paragraph) => {
+            // If it's an error, get its message.
+            const message = this.getErrorMessageFromError(paragraph);
+
+            if (paragraph) {
+                messages.push(message);
+            }
+        });
+
+        if (messages.length < 2) {
+            return messages[0] || '';
+        }
+
+        let builtMessage = messages[0];
+
+        for (let i = 1; i < messages.length; i++) {
+            builtMessage = this.translate.instant('core.twoparagraphs', { p1: builtMessage, p2: messages[i] });
+        }
+
+        return builtMessage;
     }
 
     /**
@@ -342,17 +419,23 @@ export class CoreTextUtilsProvider {
      * Escape an HTML text. This implementation is based on PHP's htmlspecialchars.
      *
      * @param text Text to escape.
+     * @param doubleEncode If false, it will not convert existing html entities. Defaults to true.
      * @return Escaped text.
      */
-    escapeHTML(text: string | number): string {
+    escapeHTML(text: string | number, doubleEncode: boolean = true): string {
         if (typeof text == 'undefined' || text === null || (typeof text == 'number' && isNaN(text))) {
             return '';
         } else if (typeof text != 'string') {
             return '' + text;
         }
 
+        if (doubleEncode) {
+            text = text.replace(/&/g, '&amp;');
+        } else {
+            text = text.replace(/&(?!amp;)(?!lt;)(?!gt;)(?!quot;)(?!#039;)/g, '&amp;');
+        }
+
         return text
-            .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
@@ -371,28 +454,20 @@ export class CoreTextUtilsProvider {
      * @param contextLevel The context level.
      * @param instanceId The instance ID related to the context.
      * @param courseId Course ID the text belongs to. It can be used to improve performance with filters.
+     * @deprecated since 3.8.3. Please use viewText instead.
      */
     expandText(title: string, text: string, component?: string, componentId?: string | number, files?: any[],
             filter?: boolean, contextLevel?: string, instanceId?: number, courseId?: number): void {
-        if (text.length > 0) {
-            const params: any = {
-                title: title,
-                content: text,
-                component: component,
-                componentId: componentId,
-                files: files,
-                filter: filter,
-                contextLevel: contextLevel,
-                instanceId: instanceId,
-                courseId: courseId
-            };
 
-            // Open a modal with the contents.
-            params.isModal = true;
-
-            const modal = this.modalCtrl.create('CoreViewerTextPage', params);
-            modal.present();
-        }
+        return this.viewText(title, text, {
+            component,
+            componentId,
+            files,
+            filter,
+            contextLevel,
+            instanceId,
+            courseId,
+        });
     }
 
     /**
@@ -449,7 +524,7 @@ export class CoreTextUtilsProvider {
      * @param error Error object.
      * @return Error message, undefined if not found.
      */
-    getErrorMessageFromError(error: any): string {
+    getErrorMessageFromError(error: string | CoreTextErrorObject): string {
         if (typeof error == 'string') {
             return error;
         }
@@ -626,6 +701,60 @@ export class CoreTextUtilsProvider {
     }
 
     /**
+     * Replace draftfile URLs with the equivalent pluginfile URL.
+     *
+     * @param siteUrl URL of the site.
+     * @param text Text to treat, including draftfile URLs.
+     * @param files List of files of the area, using pluginfile URLs.
+     * @return Treated text and map with the replacements.
+     */
+    replaceDraftfileUrls(siteUrl: string, text: string, files: CoreWSExternalFile[])
+            : {text: string, replaceMap?: {[url: string]: string}} {
+
+        if (!text || !files || !files.length) {
+            return {text};
+        }
+
+        const draftfileUrl = this.concatenatePaths(siteUrl, 'draftfile.php');
+        const matches = text.match(new RegExp(this.escapeForRegex(draftfileUrl) + '[^\'" ]+', 'ig'));
+
+        if (!matches || !matches.length) {
+            return {text};
+        }
+
+        // Index the pluginfile URLs by file name.
+        const pluginfileMap: {[name: string]: string} = {};
+        files.forEach((file) => {
+            pluginfileMap[file.filename] = file.fileurl;
+        });
+
+        // Replace each draftfile with the corresponding pluginfile URL.
+        const replaceMap: {[url: string]: string} = {};
+        matches.forEach((url) => {
+            if (replaceMap[url]) {
+                // URL already treated, same file embedded more than once.
+                return;
+            }
+
+            // Get the filename from the URL.
+            let filename = url.substr(url.lastIndexOf('/') + 1);
+            if (filename.indexOf('?') != -1) {
+                filename = filename.substr(0, filename.indexOf('?'));
+            }
+
+            if (pluginfileMap[filename]) {
+                replaceMap[url] = pluginfileMap[filename];
+                text = text.replace(new RegExp(this.escapeForRegex(url), 'g'), pluginfileMap[filename]);
+            }
+        });
+
+        return {
+            text,
+            replaceMap,
+        };
+    }
+
+    /**
      * Replace @@PLUGINFILE@@ wildcards with the real URL in a text.
      *
      * @param Text to treat.
@@ -641,6 +770,36 @@ export class CoreTextUtilsProvider {
         }
 
         return text;
+    }
+
+    /**
+     * Restore original draftfile URLs.
+     *
+     * @param text Text to treat, including pluginfile URLs.
+     * @param replaceMap Map of the replacements that were done.
+     * @return Treated text.
+     */
+    restoreDraftfileUrls(siteUrl: string, treatedText: string, originalText: string, files: CoreWSExternalFile[]): string {
+        if (!treatedText || !files || !files.length) {
+            return treatedText;
+        }
+
+        const draftfileUrl = this.concatenatePaths(siteUrl, 'draftfile.php');
+        const draftfileUrlRegexPrefix = this.escapeForRegex(draftfileUrl) + '/[^/]+/[^/]+/[^/]+/[^/]+/';
+
+        files.forEach((file) => {
+            // Search the draftfile URL in the original text.
+            const matches = originalText.match(new RegExp(
+                    draftfileUrlRegexPrefix + this.escapeForRegex(file.filename) + '[^\'" ]*', 'i'));
+
+            if (!matches || !matches[0]) {
+                return; // Original URL not found, skip.
+            }
+
+            treatedText = treatedText.replace(new RegExp(this.escapeForRegex(file.fileurl), 'g'), matches[0]);
+        });
+
+        return treatedText;
     }
 
     /**
@@ -1063,4 +1222,51 @@ export class CoreTextUtilsProvider {
 
         return _unserialize((data + ''), 0)[2];
     }
+
+    /**
+     * Shows a text on a new page.
+     *
+     * @param title Title of the new state.
+     * @param text Content of the text to be expanded.
+     * @param component Component to link the embedded files to.
+     * @param componentId An ID to use in conjunction with the component.
+     * @param files List of files to display along with the text.
+     * @param filter Whether the text should be filtered.
+     * @param contextLevel The context level.
+     * @param instanceId The instance ID related to the context.
+     * @param courseId Course ID the text belongs to. It can be used to improve performance with filters.
+     */
+    viewText(title: string, text: string, options?: CoreTextUtilsViewTextOptions): void {
+        if (text.length > 0) {
+            options = options || {};
+
+            const params: any = {
+                title: title,
+                content: text,
+                isModal: true,
+            };
+
+            Object.assign(params, options);
+
+            const modal = this.modalCtrl.create('CoreViewerTextPage', params, options.modalOptions);
+            modal.present();
+        }
+    }
 }
+
+/**
+ * Options for viewText.
+ */
+export type CoreTextUtilsViewTextOptions = {
+    component?: string; // Component to link the embedded files to.
+    componentId?: string | number; // An ID to use in conjunction with the component.
+    files?: any[]; // List of files to display along with the text.
+    filter?: boolean; // Whether the text should be filtered.
+    contextLevel?: string; // The context level.
+    instanceId?: number; // The instance ID related to the context.
+    courseId?: number; // Course ID the text belongs to. It can be used to improve performance with filters.
+    displayCopyButton?: boolean; // Whether to display a button to copy the text.
+    modalOptions?: ModalOptions; // Modal options.
+};
+
+export class CoreTextUtils extends makeSingleton(CoreTextUtilsProvider) {}

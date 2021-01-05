@@ -120,8 +120,6 @@ function add_langs_to_config($langs, $config) {
 function get_langfolder($lang) {
     $folder = LANGPACKSFOLDER.'/'.str_replace('-', '_', $lang);
     if (!is_dir($folder) || !is_file($folder.'/langconfig.php')) {
-        echo "Cannot translate $folder, folder not found";
-
         return false;
     }
 
@@ -173,6 +171,8 @@ function reset_translations_strings() {
 function build_lang($lang, $keys) {
     $langfoldername = get_langfolder($lang);
     if (!$langfoldername) {
+        echo "Cannot translate $lang, folder not found";
+
         return false;
     }
 
@@ -182,15 +182,18 @@ function build_lang($lang, $keys) {
         $override_langfolder = false;
     }
 
-    $total = count ($keys);
+    $total = count($keys);
     $local = 0;
 
-    $string = get_translation_strings($langfoldername, 'langconfig');
-    $parent = isset($string['parentlanguage']) ? $string['parentlanguage'] : "";
+    $langparts = explode('-', $lang, 2);
+    $parentname = $langparts[0] ? $langparts[0] : "";
+    $parent = "";
 
     echo "Processing $lang";
-    if ($parent != "" && $parent != $lang) {
-        echo " ($parent)";
+    // Check parent language exists.
+    if ($parentname != $lang && get_langfolder($parentname)) {
+        echo " ($parentname)";
+        $parent = $parentname;
     }
 
     $langFile = false;
@@ -207,8 +210,20 @@ function build_lang($lang, $keys) {
         $string = get_translation_strings($langfoldername, $value->file, $override_langfolder);
         // Apply translations.
         if (!$string) {
+            if ($value->file == 'donottranslate') {
+                // Restore it form the json.
+                if ($langFile && is_array($langFile) && isset($langFile[$key])) {
+                    $translations[$key] = $langFile[$key];
+                } else {
+                    // If not present, do not count it in the total.
+                    $total--;
+                }
+
+                continue;
+            }
+
             if (TOTRANSLATE) {
-                echo "\n\t\To translate $value->string on $value->file";
+                echo "\n\t\tTo translate $value->string on $value->file";
             }
             continue;
         }
@@ -217,9 +232,12 @@ function build_lang($lang, $keys) {
             // Not yet translated. Do not override.
             if ($langFile && is_array($langFile) && isset($langFile[$key])) {
                 $translations[$key] = $langFile[$key];
-                $local++;
+
+                if ($value->file == 'local_moodlemobileapp') {
+                    $local++;
+                }
             }
-            if (TOTRANSLATE) {
+            if (TOTRANSLATE && !isset($string[$value->string])) {
                 echo "\n\t\tTo translate $value->string on $value->file";
             }
             continue;
@@ -244,6 +262,12 @@ function build_lang($lang, $keys) {
         $translations[$key] = html_entity_decode($text);
     }
 
+    if (!empty($parent)) {
+        $translations['core.parentlanguage'] = $parent;
+    } else if (isset($translations['core.parentlanguage'])) {
+        unset($translations['core.parentlanguage']);
+    }
+
     // Sort and save.
     ksort($translations);
     file_put_contents(ASSETSPATH.$lang.'.json', str_replace('\/', '/', json_encode($translations, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)));
@@ -265,13 +289,15 @@ function build_lang($lang, $keys) {
 }
 
 function progressbar($percentage) {
-    $done = $percentage/10;
+    $done = floor($percentage/10);
     return "\t".str_repeat('=', $done) . str_repeat('-', 10-$done);
 }
 
 function detect_lang($lang, $keys) {
     $langfoldername = get_langfolder($lang);
     if (!$langfoldername) {
+        echo "Cannot translate $lang, folder not found";
+
         return false;
     }
 
@@ -293,13 +319,15 @@ function detect_lang($lang, $keys) {
     $langname = $string['thislanguage'];
     $title .= " ".$langname." -D";
 
-
-
     // Add the translation to the array.
     foreach ($keys as $key => $value) {
         $string = get_translation_strings($langfoldername, $value->file);
         // Apply translations.
         if (!$string) {
+            // Do not count non translatable in the totals.
+            if ($value->file == 'donottranslate') {
+                $total--;
+            }
             continue;
         }
 
@@ -371,6 +399,9 @@ function override_component_lang_files($keys, $translations) {
                 break;
             case 'assets':
                 $path .= $type.'/'.$component;
+                break;
+            default:
+                $path .= $type.'/lang';
                 break;
 
         }

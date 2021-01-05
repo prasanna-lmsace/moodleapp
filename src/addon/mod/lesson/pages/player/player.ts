@@ -12,14 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Component, OnInit, OnDestroy, ViewChild, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, OnDestroy, ViewChild, ChangeDetectorRef, ElementRef } from '@angular/core';
 import { FormBuilder, FormGroup } from '@angular/forms';
 import { IonicPage, NavParams, Content, PopoverController, ModalController, Modal, NavController } from 'ionic-angular';
 import { TranslateService } from '@ngx-translate/core';
 import { CoreAppProvider } from '@providers/app';
 import { CoreEventsProvider } from '@providers/events';
-import { CoreLoggerProvider } from '@providers/logger';
-import { CoreSitesProvider } from '@providers/sites';
+import { CoreSitesProvider, CoreSitesReadingStrategy } from '@providers/sites';
 import { CoreSyncProvider } from '@providers/sync';
 import { CoreDomUtilsProvider } from '@providers/utils/dom';
 import { CoreTimeUtilsProvider } from '@providers/utils/time';
@@ -41,6 +40,7 @@ import { AddonModLessonHelperProvider } from '../../providers/helper';
 })
 export class AddonModLessonPlayerPage implements OnInit, OnDestroy {
     @ViewChild(Content) content: Content;
+    @ViewChild('questionFormEl') formElement: ElementRef;
 
     component = AddonModLessonProvider.COMPONENT;
     LESSON_EOL = AddonModLessonProvider.LESSON_EOL;
@@ -79,7 +79,7 @@ export class AddonModLessonPlayerPage implements OnInit, OnDestroy {
     protected loadingMenu: boolean; // Whether the lesson menu is being loaded.
     protected lessonPages: any[]; // Lesson pages (for the lesson menu).
 
-    constructor(protected navParams: NavParams, logger: CoreLoggerProvider, protected translate: TranslateService,
+    constructor(protected navParams: NavParams, protected translate: TranslateService,
             protected eventsProvider: CoreEventsProvider, protected sitesProvider: CoreSitesProvider,
             protected syncProvider: CoreSyncProvider, protected domUtils: CoreDomUtilsProvider, popoverCtrl: PopoverController,
             protected timeUtils: CoreTimeUtilsProvider, protected lessonProvider: AddonModLessonProvider,
@@ -136,19 +136,19 @@ export class AddonModLessonPlayerPage implements OnInit, OnDestroy {
      *
      * @return Resolved if we can leave it, rejected if not.
      */
-    ionViewCanLeave(): boolean | Promise<void> {
+    async ionViewCanLeave(): Promise<void> {
         if (this.forceLeave) {
-            return true;
+            return;
         }
 
         if (this.question && !this.eolData && !this.processData && this.originalData) {
             // Question shown. Check if there is any change.
             if (!this.utils.basicLeftCompare(this.questionForm.getRawValue(), this.originalData, 3)) {
-                 return this.domUtils.showConfirm(this.translate.instant('core.confirmcanceledit'));
+                 await this.domUtils.showConfirm(this.translate.instant('core.confirmcanceledit'));
             }
         }
 
-        return Promise.resolve();
+        this.domUtils.triggerFormCancelledEvent(this.formElement, this.sitesProvider.getCurrentSiteId());
     }
 
     /**
@@ -172,11 +172,10 @@ export class AddonModLessonPlayerPage implements OnInit, OnDestroy {
      *
      * @param func Function to call.
      * @param args Arguments to pass to the function.
-     * @param offlineParamPos Position of the offline parameter in the args.
-     * @param jumpsParamPos Position of the jumps parameter in the args.
+     * @param options Options passed to the function (also included in args).
      * @return Promise resolved in success, rejected otherwise.
      */
-    protected callFunction(func: Function, args: any[], offlineParamPos: number, jumpsParamPos?: number): Promise<any> {
+    protected callFunction(func: Function, args: any[], options: any): Promise<any> {
         return func.apply(func, args).catch((error) => {
             if (!this.offline && !this.review && this.lessonProvider.isLessonOffline(this.lesson) &&
                     !this.utils.isWebServiceError(error)) {
@@ -184,14 +183,16 @@ export class AddonModLessonPlayerPage implements OnInit, OnDestroy {
                 this.offline = true;
 
                 // Get the possible jumps now.
-                return this.lessonProvider.getPagesPossibleJumps(this.lesson.id, true).then((jumpList) => {
+                return this.lessonProvider.getPagesPossibleJumps(this.lesson.id, {
+                    cmId: this.lesson.coursemodule,
+                    readingStrategy: CoreSitesReadingStrategy.PreferCache,
+                }).then((jumpList) => {
                     this.jumps = jumpList;
 
-                    // Call the function again with offline set to true and the new jumps.
-                    args[offlineParamPos] = true;
-                    if (typeof jumpsParamPos != 'undefined') {
-                        args[jumpsParamPos] = this.jumps;
-                    }
+                    // Call the function again with offline mode and the new jumps.
+                    options.readingStrategy = CoreSitesReadingStrategy.PreferCache;
+                    options.jumps = this.jumps;
+                    options.offline = true;
 
                     return func.apply(func, args);
                 });
@@ -246,8 +247,13 @@ export class AddonModLessonPlayerPage implements OnInit, OnDestroy {
                 this.offline = true;
             }
 
+            const options = {
+                cmId: this.lesson.coursemodule,
+                readingStrategy: this.offline ? CoreSitesReadingStrategy.PreferCache : CoreSitesReadingStrategy.OnlyNetwork,
+            };
+
             return this.callFunction(this.lessonProvider.getAccessInformation.bind(this.lessonProvider),
-                    [this.lesson.id, this.offline, true], 1);
+                    [this.lesson.id, options], options);
         }).then((info) => {
             const promises = [];
 
@@ -272,15 +278,23 @@ export class AddonModLessonPlayerPage implements OnInit, OnDestroy {
 
             if (this.password) {
                 // Lesson uses password, get the whole lesson object.
+                const options = {
+                    password: this.password,
+                    cmId: this.lesson.coursemodule,
+                    readingStrategy: this.offline ? CoreSitesReadingStrategy.PreferCache : CoreSitesReadingStrategy.OnlyNetwork,
+                };
                 promises.push(this.callFunction(this.lessonProvider.getLessonWithPassword.bind(this.lessonProvider),
-                        [this.lesson.id, this.password, true, this.offline, true], 3).then((lesson) => {
+                        [this.lesson.id, options], options).then((lesson) => {
                     this.lesson = lesson;
                 }));
             }
 
             if (this.offline) {
                 // Offline mode, get the list of possible jumps to allow navigation.
-                promises.push(this.lessonProvider.getPagesPossibleJumps(this.lesson.id, true).then((jumpList) => {
+                promises.push(this.lessonProvider.getPagesPossibleJumps(this.lesson.id, {
+                    cmId: this.lesson.coursemodule,
+                    readingStrategy: CoreSitesReadingStrategy.PreferCache,
+                }).then((jumpList) => {
                     this.jumps = jumpList;
                 }));
             }
@@ -334,7 +348,9 @@ export class AddonModLessonPlayerPage implements OnInit, OnDestroy {
                     const error = result.warnings[0];
 
                     // Some data was deleted. Check if the retake has changed.
-                    return this.lessonProvider.getAccessInformation(this.lesson.id).then((info) => {
+                    return this.lessonProvider.getAccessInformation(this.lesson.id, {
+                        cmId: this.lesson.coursemodule,
+                    }).then((info) => {
                         if (info.attemptscount != this.accessInfo.attemptscount) {
                             // The retake has changed. Leave the view and show the error.
                             this.forceLeave = true;
@@ -359,14 +375,23 @@ export class AddonModLessonPlayerPage implements OnInit, OnDestroy {
 
         return promise.then(() => {
             // Now finish the retake.
-            const args = [this.lesson, this.courseId, this.password, outOfTime, this.review, this.offline, this.accessInfo];
+            const options = {
+                password: this.password,
+                outOfTime,
+                review: this.review,
+                offline: this.offline,
+                accessInfo: this.accessInfo,
+            };
+            const args = [this.lesson, this.courseId, options];
 
-            return this.callFunction(this.lessonProvider.finishRetake.bind(this.lessonProvider), args, 5);
+            return this.callFunction(this.lessonProvider.finishRetake.bind(this.lessonProvider), args, options);
         }).then((data) => {
             this.title = this.lesson.name;
             this.eolData = data.data;
             this.messages = this.messages.concat(data.messages);
             this.processData = undefined;
+
+            this.eventsProvider.trigger(CoreEventsProvider.ACTIVITY_DATA_SENT, { module: 'lesson' });
 
             // Format activity link if present.
             if (this.eolData && this.eolData.activitylink) {
@@ -445,7 +470,10 @@ export class AddonModLessonPlayerPage implements OnInit, OnDestroy {
 
             if (this.lesson.timelimit && !this.accessInfo.canmanage) {
                 // Get the last lesson timer.
-                return this.lessonProvider.getTimers(this.lesson.id, false, true).then((timers) => {
+                return this.lessonProvider.getTimers(this.lesson.id, {
+                    cmId: this.lesson.coursemodule,
+                    readingStrategy: CoreSitesReadingStrategy.OnlyNetwork,
+                }).then((timers) => {
                     this.endTime = timers[timers.length - 1].starttime + this.lesson.timelimit;
                 });
             }
@@ -467,9 +495,14 @@ export class AddonModLessonPlayerPage implements OnInit, OnDestroy {
 
         this.loadingMenu = true;
 
-        const args = [this.lessonId, this.password, this.offline, true];
+        const options = {
+            password: this.password,
+            cmId: this.lesson.coursemodule,
+            readingStrategy: this.offline ? CoreSitesReadingStrategy.PreferCache : CoreSitesReadingStrategy.OnlyNetwork,
+        };
+        const args = [this.lessonId, options];
 
-        return this.callFunction(this.lessonProvider.getPages.bind(this.lessonProvider), args, 2).then((pages) => {
+        return this.callFunction(this.lessonProvider.getPages.bind(this.lessonProvider), args, options).then((pages) => {
             this.lessonPages = pages.map((entry) => {
                 return entry.page;
             });
@@ -492,9 +525,19 @@ export class AddonModLessonPlayerPage implements OnInit, OnDestroy {
             return this.finishRetake();
         }
 
-        const args = [this.lesson, pageId, this.password, this.review, true, this.offline, true, this.accessInfo, this.jumps];
+        const options = {
+            password: this.password,
+            review: this.review,
+            includeContents: true,
+            cmId: this.lesson.coursemodule,
+            readingStrategy: this.offline ? CoreSitesReadingStrategy.PreferCache : CoreSitesReadingStrategy.OnlyNetwork,
+            accessInfo: this.accessInfo,
+            jumps: this.jumps,
+            includeOfflineData: true,
+        };
+        const args = [this.lesson, pageId, options];
 
-        return this.callFunction(this.lessonProvider.getPageData.bind(this.lessonProvider), args, 5, 8).then((data) => {
+        return this.callFunction(this.lessonProvider.getPageData.bind(this.lessonProvider), args, options).then((data) => {
             if (data.newpageid == AddonModLessonProvider.LESSON_EOL) {
                 // End of lesson reached.
                 return this.finishRetake();
@@ -540,23 +583,38 @@ export class AddonModLessonPlayerPage implements OnInit, OnDestroy {
      * Process a page, sending some data.
      *
      * @param data The data to send.
+     * @param formSubmitted Whether a form was submitted.
      * @return Promise resolved when done.
      */
-    protected processPage(data: any): Promise<any> {
+    protected processPage(data: any, formSubmitted?: boolean): Promise<any> {
         this.loaded = false;
 
-        const args = [this.lesson, this.courseId, this.pageData, data, this.password, this.review, this.offline, this.accessInfo,
-                this.jumps];
+        const options = {
+            password: this.password,
+            review: this.review,
+            offline: this.offline,
+            accessInfo: this.accessInfo,
+            jumps: this.jumps,
+        };
+        const args = [this.lesson, this.courseId, this.pageData, data, options];
 
-        return this.callFunction(this.lessonProvider.processPage.bind(this.lessonProvider), args, 6, 8).then((result) => {
+        return this.callFunction(this.lessonProvider.processPage.bind(this.lessonProvider), args, options).then((result) => {
+            if (formSubmitted) {
+                this.domUtils.triggerFormSubmittedEvent(this.formElement, result.sent, this.sitesProvider.getCurrentSiteId());
+            }
+
             if (!this.offline && !this.review && this.lessonProvider.isLessonOffline(this.lesson)) {
                 // Lesson allows offline and the user changed some data in server. Update cached data.
                 const retake = this.accessInfo.attemptscount;
+                const options = {
+                    cmId: this.lesson.coursemodule,
+                    readingStrategy: CoreSitesReadingStrategy.OnlyNetwork,
+                };
 
                 if (this.lessonProvider.isQuestionPage(this.pageData.page.type)) {
-                    this.lessonProvider.getQuestionsAttemptsOnline(this.lessonId, retake, false, undefined, false, true);
+                    this.lessonProvider.getQuestionsAttemptsOnline(this.lessonId, retake, options);
                 } else {
-                    this.lessonProvider.getContentPagesViewedOnline(this.lessonId, retake, false, true);
+                    this.lessonProvider.getContentPagesViewedOnline(this.lessonId, retake, options);
                 }
             }
 
@@ -637,7 +695,7 @@ export class AddonModLessonPlayerPage implements OnInit, OnDestroy {
         // Use getRawValue to include disabled values.
         const data = this.lessonHelper.prepareQuestionData(this.question, this.questionForm.getRawValue());
 
-        this.processPage(data).finally(() => {
+        this.processPage(data, true).finally(() => {
             this.loaded = true;
         });
     }

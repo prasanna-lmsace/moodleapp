@@ -16,8 +16,9 @@ import { Injectable, NgZone } from '@angular/core';
 import { Config, Platform, NavController } from 'ionic-angular';
 import { TranslateService } from '@ngx-translate/core';
 import { Network } from '@ionic-native/network';
-import { CoreAppProvider } from '../app';
+import { CoreApp, CoreAppProvider } from '../app';
 import { CoreFileProvider } from '../file';
+import { CoreFileHelper } from '../file-helper';
 import { CoreLoggerProvider } from '../logger';
 import { CoreSitesProvider } from '../sites';
 import { CoreDomUtilsProvider } from './dom';
@@ -25,6 +26,11 @@ import { CoreTextUtilsProvider } from './text';
 import { CoreUrlUtilsProvider } from './url';
 import { CoreUtilsProvider } from './utils';
 import { CoreContentLinksHelperProvider } from '@core/contentlinks/providers/helper';
+import { makeSingleton } from '@singletons/core.singletons';
+import { CoreUrl } from '@singletons/url';
+import { CoreWindow } from '@singletons/window';
+import { WKUserScriptWindow } from 'cordova-plugin-wkuserscript';
+import { WKWebViewCookiesWindow } from 'cordova-plugin-wkwebview-cookies';
 
 /*
  * "Utils" service with helper functions for iframes, embed and similar.
@@ -35,12 +41,42 @@ export class CoreIframeUtilsProvider {
 
     protected logger;
 
-    constructor(logger: CoreLoggerProvider, private fileProvider: CoreFileProvider, private sitesProvider: CoreSitesProvider,
-            private urlUtils: CoreUrlUtilsProvider, private textUtils: CoreTextUtilsProvider, private utils: CoreUtilsProvider,
-            private domUtils: CoreDomUtilsProvider, private platform: Platform, private appProvider: CoreAppProvider,
-            private translate: TranslateService, private network: Network, private zone: NgZone, private config: Config,
-            private contentLinksHelper: CoreContentLinksHelperProvider) {
+    constructor(logger: CoreLoggerProvider,
+            private fileProvider: CoreFileProvider,
+            private sitesProvider: CoreSitesProvider,
+            private urlUtils: CoreUrlUtilsProvider,
+            private textUtils: CoreTextUtilsProvider,
+            private utils: CoreUtilsProvider,
+            private domUtils: CoreDomUtilsProvider,
+            platform: Platform,
+            appProvider: CoreAppProvider,
+            private translate: TranslateService,
+            private network: Network, private zone: NgZone,
+            private config: Config,
+            private contentLinksHelper: CoreContentLinksHelperProvider
+            ) {
         this.logger = logger.getInstance('CoreUtilsProvider');
+
+        const win = <WKUserScriptWindow> window;
+
+        if (appProvider.isIOS() && win.WKUserScript) {
+            platform.ready().then(() => {
+                // Inject code to the iframes because we cannot access the online ones.
+                const wwwPath = fileProvider.getWWWAbsolutePath();
+                const linksPath = textUtils.concatenatePaths(wwwPath, 'assets/js/iframe-treat-links.js');
+                const recaptchaPath = textUtils.concatenatePaths(wwwPath, 'assets/js/iframe-recaptcha.js');
+
+                win.WKUserScript.addScript({id: 'CoreIframeUtilsLinksScript', file: linksPath});
+                win.WKUserScript.addScript({
+                    id: 'CoreIframeUtilsRecaptchaScript',
+                    file: recaptchaPath,
+                    injectionTime: win.WKUserScript.InjectionTime.END,
+                });
+
+                // Handle post messages received by iframes.
+                window.addEventListener('message', this.handleIframeMessage.bind(this));
+            });
+        }
     }
 
     /**
@@ -53,7 +89,7 @@ export class CoreIframeUtilsProvider {
     checkOnlineFrameInOffline(element: any, isSubframe?: boolean): boolean {
         const src = element.src || element.data;
 
-        if (src && src.match(/^https?:\/\//i) && !this.appProvider.isOnline()) {
+        if (src && src != 'about:blank' && !this.urlUtils.isLocalFileUrl(src) && !CoreApp.instance.isOnline()) {
             if (element.classList.contains('core-iframe-offline-disabled')) {
                 // Iframe already hidden, stop.
                 return true;
@@ -185,6 +221,30 @@ export class CoreIframeUtilsProvider {
     }
 
     /**
+     * Handle some iframe messages.
+     *
+     * @param event Message event.
+     */
+    handleIframeMessage(event: MessageEvent): void {
+        if (!event.data || event.data.environment != 'moodleapp' || event.data.context != 'iframe') {
+            return;
+        }
+
+        switch (event.data.action) {
+            case 'window_open':
+                this.windowOpen(event.data.url, event.data.name);
+                break;
+
+            case 'link_clicked':
+                this.linkClicked(event.data.link);
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    /**
      * Redefine the open method in the contentWindow of an element and the sub frames.
      * Please notice that the element should be an iframe, embed or similar.
      *
@@ -196,55 +256,9 @@ export class CoreIframeUtilsProvider {
     redefineWindowOpen(element: any, contentWindow: Window, contentDocument: Document, navCtrl?: NavController): void {
         if (contentWindow) {
             // Intercept window.open.
-            contentWindow.open = (url: string, target: string): Window => {
-                const scheme = this.urlUtils.getUrlScheme(url);
-                if (!scheme) {
-                    // It's a relative URL, use the frame src to create the full URL.
-                    const src = element.src || element.data;
-                    if (src) {
-                        const dirAndFile = this.fileProvider.getFileAndDirectoryFromPath(src);
-                        if (dirAndFile.directory) {
-                            url = this.textUtils.concatenatePaths(dirAndFile.directory, url);
-                        } else {
-                            this.logger.warn('Cannot get iframe dir path to open relative url', url, element);
+            contentWindow.open = (url: string, name: string): Window => {
+                this.windowOpen(url, name, element, navCtrl);
 
-                            return null;
-                        }
-                    } else {
-                        this.logger.warn('Cannot get iframe src to open relative url', url, element);
-
-                        return null;
-                    }
-                }
-
-                if (target == '_self') {
-                    // Link should be loaded in the same frame.
-                    if (element.tagName.toLowerCase() == 'object') {
-                        element.setAttribute('data', url);
-                    } else {
-                        element.setAttribute('src', url);
-                    }
-                } else if (url.indexOf('cdvfile://') === 0 || url.indexOf('file://') === 0) {
-                    // It's a local file.
-                    this.utils.openFile(url).catch((error) => {
-                        this.domUtils.showErrorModal(error);
-                    });
-                } else {
-                    // It's an external link, check if it can be opened in the app.
-                    this.contentLinksHelper.handleLink(url, undefined, navCtrl, true, true).then((treated) => {
-                        if (!treated) {
-                            // Not opened in the app, open with browser. Check if we need to auto-login
-                            if (!this.sitesProvider.isLoggedIn()) {
-                                // Not logged in, cannot auto-login.
-                                this.utils.openInBrowser(url);
-                            } else {
-                                this.sitesProvider.getCurrentSite().openInBrowserWithAutoLoginIfSameSite(url);
-                            }
-                        }
-                    });
-                }
-
-                 // We cannot create new Window objects directly, return null which is a valid return value for Window.open().
                 return null;
             };
         }
@@ -316,7 +330,7 @@ export class CoreIframeUtilsProvider {
 
             // Find the link being clicked.
             let el = <Element> event.target;
-            while (el && el.tagName !== 'A') {
+            while (el && el.tagName !== 'A' && el.tagName !== 'a') {
                 el = el.parentElement;
             }
 
@@ -327,41 +341,109 @@ export class CoreIframeUtilsProvider {
 
             // Add click listener to the link, this way if the iframe has added a listener to the link it will be executed first.
             link.treated = true;
-            link.addEventListener('click', this.linkClicked.bind(this, element, link));
+            link.addEventListener('click', this.linkClicked.bind(this, link, element));
         }, {
             capture: true // Use capture to fix this listener not called if the element clicked is too deep in the DOM.
         });
     }
 
     /**
+     * Handle a window.open called by a frame.
+     *
+     * @param url URL passed to window.open.
+     * @param name Name passed to window.open.
+     * @param element HTML element of the frame.
+     * @param navCtrl NavController to use if a link can be opened in the app.
+     * @return Promise resolved when done.
+     */
+    protected async windowOpen(url: string, name: string, element?: any, navCtrl?: NavController): Promise<void> {
+        const scheme = this.urlUtils.getUrlScheme(url);
+        if (!scheme) {
+            // It's a relative URL, use the frame src to create the full URL.
+            const src = element && (element.src || element.data);
+            if (src) {
+                const dirAndFile = this.fileProvider.getFileAndDirectoryFromPath(src);
+                if (dirAndFile.directory) {
+                    url = this.textUtils.concatenatePaths(dirAndFile.directory, url);
+                } else {
+                    this.logger.warn('Cannot get iframe dir path to open relative url', url, element);
+
+                    return;
+                }
+            } else {
+                this.logger.warn('Cannot get iframe src to open relative url', url, element);
+
+                return;
+            }
+        }
+
+        if (name == '_self') {
+            // Link should be loaded in the same frame.
+            if (!element) {
+                this.logger.warn('Cannot load URL in iframe because the element was not supplied', url);
+
+                return;
+            }
+
+            if (element.tagName.toLowerCase() == 'object') {
+                element.setAttribute('data', url);
+            } else {
+                element.setAttribute('src', url);
+            }
+        } else if (this.urlUtils.isLocalFileUrl(url)) {
+            // It's a local file.
+            const filename = url.substr(url.lastIndexOf('/') + 1);
+
+            if (!CoreFileHelper.instance.isOpenableInApp({ filename })) {
+                try {
+                    await CoreFileHelper.instance.showConfirmOpenUnsupportedFile();
+                } catch (error) {
+                    return; // Cancelled, stop.
+                }
+            }
+
+            try {
+                await this.utils.openFile(url);
+            } catch (error) {
+                this.domUtils.showErrorModal(error);
+            }
+        } else {
+            // It's an external link, check if it can be opened in the app.
+            await CoreWindow.open(url, name, {
+                navCtrl,
+            });
+        }
+    }
+
+    /**
      * A link inside a frame was clicked.
      *
+     * @param link Data of the link clicked.
      * @param element Frame element.
-     * @param link Link clicked.
      * @param event Click event.
+     * @return Promise resolved when done.
      */
-    protected linkClicked(element: HTMLFrameElement | HTMLObjectElement, link: HTMLAnchorElement, event: Event): void {
-        if (event.defaultPrevented) {
+    protected async linkClicked(link: {href: string, target?: string}, element?: HTMLFrameElement | HTMLObjectElement,
+            event?: Event): Promise<void> {
+        if (event && event.defaultPrevented) {
             // Event already prevented by some other code.
             return;
         }
 
-        const scheme = this.urlUtils.getUrlScheme(link.href);
-        if (!link.href || (scheme && scheme == 'javascript')) {
+        const urlParts = CoreUrl.parse(link.href);
+        if (!link.href || (urlParts.protocol && urlParts.protocol == 'javascript')) {
             // Links with no URL and Javascript links are ignored.
             return;
         }
 
-        if (scheme && scheme != 'file' && scheme != 'filesystem') {
+        if (!this.urlUtils.isLocalFileUrlScheme(urlParts.protocol, urlParts.domain)) {
             // Scheme suggests it's an external resource.
-            event.preventDefault();
+            event && event.preventDefault();
 
-            const frameSrc = (<HTMLFrameElement> element).src || (<HTMLObjectElement> element).data,
-                frameScheme = this.urlUtils.getUrlScheme(frameSrc);
+            const frameSrc = element && ((<HTMLFrameElement> element).src || (<HTMLObjectElement> element).data);
 
             // If the frame is not local, check the target to identify how to treat the link.
-            if (frameScheme && frameScheme != 'file' && frameScheme != 'filesystem' &&
-                    (!link.target || link.target == '_self')) {
+            if (element && !this.urlUtils.isLocalFileUrl(frameSrc) && (!link.target || link.target == '_self')) {
                 // Load the link inside the frame itself.
                 if (element.tagName.toLowerCase() == 'object') {
                     element.setAttribute('data', link.href);
@@ -376,17 +458,30 @@ export class CoreIframeUtilsProvider {
             if (!this.sitesProvider.isLoggedIn()) {
                 this.utils.openInBrowser(link.href);
             } else {
-                this.sitesProvider.getCurrentSite().openInBrowserWithAutoLoginIfSameSite(link.href);
+                await this.sitesProvider.getCurrentSite().openInBrowserWithAutoLoginIfSameSite(link.href);
             }
         } else if (link.target == '_parent' || link.target == '_top' || link.target == '_blank') {
             // Opening links with _parent, _top or _blank can break the app. We'll open it in InAppBrowser.
-            event.preventDefault();
-            this.utils.openFile(link.href).catch((error) => {
+            event && event.preventDefault();
+
+            const filename = link.href.substr(link.href.lastIndexOf('/') + 1);
+
+            if (!CoreFileHelper.instance.isOpenableInApp({ filename })) {
+                try {
+                    await CoreFileHelper.instance.showConfirmOpenUnsupportedFile();
+                } catch (error) {
+                    return; // Cancelled, stop.
+                }
+            }
+
+            try {
+                await this.utils.openFile(link.href);
+            } catch (error) {
                 this.domUtils.showErrorModal(error);
-            });
-        } else if (this.platform.is('ios') && (!link.target || link.target == '_self')) {
+            }
+        } else if (CoreApp.instance.isIOS() && (!link.target || link.target == '_self') && element) {
             // In cordova ios 4.1.0 links inside iframes stopped working. We'll manually treat them.
-            event.preventDefault();
+            event && event.preventDefault();
             if (element.tagName.toLowerCase() == 'object') {
                 element.setAttribute('data', link.href);
             } else {
@@ -394,7 +489,39 @@ export class CoreIframeUtilsProvider {
             }
         }
     }
+
+    /**
+     * Fix cookies for an iframe URL.
+     *
+     * @param url URL of the iframe.
+     * @return Promise resolved when done.
+     */
+    async fixIframeCookies(url: string): Promise<void> {
+        if (!CoreApp.instance.isIOS() || !url || this.urlUtils.isLocalFileUrl(url)) {
+            // No need to fix cookies.
+            return;
+        }
+
+        // Save a "fake" cookie for the iframe's domain to fix a bug in WKWebView.
+        try {
+            const win = <WKWebViewCookiesWindow> window;
+            const urlParts = CoreUrl.parse(url);
+
+            if (urlParts.domain) {
+                await win.WKWebViewCookies.setCookie({
+                    name: 'MoodleAppCookieForWKWebView',
+                    value: '1',
+                    domain: urlParts.domain,
+                });
+            }
+        } catch (err) {
+            // Ignore errors.
+            this.logger.error('Error setting cookie', err);
+        }
+    }
 }
+
+export class CoreIframeUtils extends makeSingleton(CoreIframeUtilsProvider) {}
 
 /**
  * Subtype of HTMLAnchorElement, with some calculated data.

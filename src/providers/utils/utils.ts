@@ -13,12 +13,13 @@
 // limitations under the License.
 
 import { Injectable, NgZone } from '@angular/core';
-import { Platform } from 'ionic-angular';
+import { Platform, ModalController } from 'ionic-angular';
 import { InAppBrowser, InAppBrowserObject } from '@ionic-native/in-app-browser';
 import { Clipboard } from '@ionic-native/clipboard';
 import { FileOpener } from '@ionic-native/file-opener';
 import { WebIntent } from '@ionic-native/web-intent';
-import { CoreAppProvider } from '../app';
+import { QRScanner } from '@ionic-native/qr-scanner';
+import { CoreApp } from '../app';
 import { CoreDomUtilsProvider } from './dom';
 import { CoreMimetypeUtilsProvider } from './mimetype';
 import { CoreTextUtilsProvider } from './text';
@@ -27,6 +28,9 @@ import { CoreLoggerProvider } from '../logger';
 import { TranslateService } from '@ngx-translate/core';
 import { CoreLangProvider } from '../lang';
 import { CoreWSProvider, CoreWSError } from '../ws';
+import { CoreFile } from '../file';
+import { Subscription } from 'rxjs';
+import { makeSingleton } from '@singletons/core.singletons';
 
 /**
  * Deferred promise. It's similar to the result of $q.defer() in AngularJS.
@@ -61,13 +65,34 @@ export class CoreUtilsProvider {
     protected logger;
     protected iabInstance: InAppBrowserObject;
     protected uniqueIds: {[name: string]: number} = {};
+    protected qrScanData: {deferred: PromiseDefer, observable: Subscription};
 
-    constructor(private iab: InAppBrowser, private appProvider: CoreAppProvider, private clipboard: Clipboard,
-            private domUtils: CoreDomUtilsProvider, logger: CoreLoggerProvider, private translate: TranslateService,
-            private platform: Platform, private langProvider: CoreLangProvider, private eventsProvider: CoreEventsProvider,
-            private fileOpener: FileOpener, private mimetypeUtils: CoreMimetypeUtilsProvider, private webIntent: WebIntent,
-            private wsProvider: CoreWSProvider, private zone: NgZone, private textUtils: CoreTextUtilsProvider) {
+    constructor(protected iab: InAppBrowser,
+            protected clipboard: Clipboard,
+            protected domUtils: CoreDomUtilsProvider,
+            logger: CoreLoggerProvider,
+            protected translate: TranslateService,
+            protected platform: Platform,
+            protected langProvider: CoreLangProvider,
+            protected eventsProvider: CoreEventsProvider,
+            protected fileOpener: FileOpener,
+            protected mimetypeUtils: CoreMimetypeUtilsProvider,
+            protected webIntent: WebIntent,
+            protected wsProvider: CoreWSProvider,
+            protected zone: NgZone,
+            protected textUtils: CoreTextUtilsProvider,
+            protected modalCtrl: ModalController,
+            protected qrScanner: QRScanner) {
         this.logger = logger.getInstance('CoreUtilsProvider');
+
+        this.platform.ready().then(() => {
+            const win = <any> window;
+
+            if (win.cordova && win.cordova.InAppBrowser) {
+                // Override the default window.open with the InAppBrowser one.
+                win.open = win.cordova.InAppBrowser.open;
+            }
+        });
     }
 
     /**
@@ -259,7 +284,7 @@ export class CoreUtilsProvider {
     closeInAppBrowser(closeAll?: boolean): void {
         if (this.iabInstance) {
             this.iabInstance.close();
-            if (closeAll && this.appProvider.isDesktop()) {
+            if (closeAll && CoreApp.instance.isDesktop()) {
                 require('electron').ipcRenderer.send('closeSecondaryWindows');
             }
         }
@@ -556,6 +581,10 @@ export class CoreUtilsProvider {
             parent = node[parentFieldName];
             node.children = [];
 
+            if (!id || !parent) {
+                this.logger.error(`Node with incorrect ${idFieldName}:${id} or ${parentFieldName}:${parent} found on formatTree`);
+            }
+
             // Use map to look-up the parents.
             map[id] = index;
             if (parent != rootParentId) {
@@ -572,12 +601,16 @@ export class CoreUtilsProvider {
                             mapDepth[id] = mapDepth[parent];
                             // Change the parent to be the one that is two levels up the hierarchy.
                             node.parent = parentOfParent;
+                        } else {
+                            this.logger.error(`Node parent of parent:${parentOfParent} not found on formatTree`);
                         }
                     } else {
                         parentNode.children.push(node);
                         // Increase the depth level.
                         mapDepth[id] = mapDepth[parent] + 1;
                     }
+                } else {
+                    this.logger.error(`Node parent:${parent} not found on formatTree`);
                 }
             } else {
                 tree.push(node);
@@ -856,14 +889,34 @@ export class CoreUtilsProvider {
     }
 
     /**
+     * Check if a value isn't null or undefined.
+     *
+     * @param value Value to check.
+     * @return True if not null and not undefined.
+     */
+    notNullOrUndefined(value: any): boolean {
+        return typeof value != 'undefined' && value !== null;
+    }
+
+    /**
      * Open a file using platform specific method.
      *
      * @param path The local path of the file to be open.
      * @return Promise resolved when done.
      */
-    openFile(path: string): Promise<any> {
-        const extension = this.mimetypeUtils.getFileExtension(path),
-            mimetype = this.mimetypeUtils.getMimeType(extension);
+    async openFile(path: string): Promise<void> {
+        // Convert the path to a native path if needed.
+        path = CoreFile.instance.unconvertFileSrc(path);
+
+        const extension = this.mimetypeUtils.getFileExtension(path);
+        const mimetype = this.mimetypeUtils.getMimeType(extension);
+
+        if (mimetype == 'text/html' && CoreApp.instance.isAndroid()) {
+            // Open HTML local files in InAppBrowser, in system browser some embedded files aren't loaded.
+            this.openInApp(path);
+
+            return;
+        }
 
         // Path needs to be decoded, the file won't be opened if the path has %20 instead of spaces and so.
         try {
@@ -872,7 +925,9 @@ export class CoreUtilsProvider {
             // Error, use the original path.
         }
 
-        return this.fileOpener.open(path, mimetype).catch((error) => {
+        try {
+            await this.fileOpener.open(path, mimetype);
+        } catch (error) {
             this.logger.error('Error opening file ' + path + ' with mimetype ' + mimetype);
             this.logger.error('Error: ', JSON.stringify(error));
 
@@ -883,8 +938,8 @@ export class CoreUtilsProvider {
                 error = this.translate.instant('core.erroropenfilenoapp');
             }
 
-            return Promise.reject(error);
-        });
+            throw error;
+        }
     }
 
     /**
@@ -901,6 +956,7 @@ export class CoreUtilsProvider {
         }
 
         options = options || {};
+        options.usewkwebview = 'yes'; // Force WKWebView in iOS.
 
         if (!options.enableViewPortScale) {
             options.enableViewPortScale = 'yes'; // Enable zoom on iOS.
@@ -910,7 +966,7 @@ export class CoreUtilsProvider {
             options.allowInlineMediaPlayback = 'yes'; // Allow playing inline videos in iOS.
         }
 
-        if (!options.location && this.platform.is('ios') && url.indexOf('file://') === 0) {
+        if (!options.location && CoreApp.instance.isIOS() && url.indexOf('file://') === 0) {
             // The URL uses file protocol, don't show it on iOS.
             // In Android we keep it because otherwise we lose the whole toolbar.
             options.location = 'no';
@@ -918,7 +974,7 @@ export class CoreUtilsProvider {
 
         this.iabInstance = this.iab.create(url, '_blank', options);
 
-        if (this.appProvider.isDesktop() || this.appProvider.isMobile()) {
+        if (CoreApp.instance.isDesktop() || CoreApp.instance.isMobile()) {
             let loadStopSubscription;
             const loadStartUrls = [];
 
@@ -936,7 +992,7 @@ export class CoreUtilsProvider {
                 });
             });
 
-            if (this.platform.is('android')) {
+            if (CoreApp.instance.isAndroid()) {
                 // Load stop is needed with InAppBrowser v3. Custom URL schemes no longer trigger load start, simulate it.
                 loadStopSubscription = this.iabInstance.on('loadstop').subscribe((event) => {
                     // Execute the callback in the Angular zone, so change detection doesn't stop working.
@@ -970,7 +1026,7 @@ export class CoreUtilsProvider {
      * @param url The URL to open.
      */
     openInBrowser(url: string): void {
-        if (this.appProvider.isDesktop()) {
+        if (CoreApp.instance.isDesktop()) {
             // It's a desktop app, use Electron shell library to open the browser.
             const shell = require('electron').shell;
             if (!shell.openExternal(url)) {
@@ -990,7 +1046,7 @@ export class CoreUtilsProvider {
      * @return Promise resolved when opened.
      */
     openOnlineFile(url: string): Promise<void> {
-        if (this.platform.is('android')) {
+        if (CoreApp.instance.isAndroid()) {
             // In Android we need the mimetype to open it.
             return this.getMimeTypeFromUrl(url).catch(() => {
                 // Error getting mimetype, return undefined.
@@ -1105,7 +1161,7 @@ export class CoreUtilsProvider {
      * @param keyPrefix Key prefix if neededs to delete it.
      * @return Object.
      */
-    objectToKeyValueMap(objects: object[], keyName: string, valueName: string, keyPrefix?: string): object {
+    objectToKeyValueMap(objects: object[], keyName: string, valueName: string, keyPrefix?: string): {[name: string]: any} {
         if (!objects) {
             return;
         }
@@ -1392,4 +1448,169 @@ export class CoreUtilsProvider {
 
         return filtered;
     }
+
+    /**
+     * Debounce a function so consecutive calls are ignored until a certain time has passed since the last call.
+     *
+     * @param context The context to apply to the function.
+     * @param fn Function to debounce.
+     * @param delay Time that must pass until the function is called.
+     * @return Debounced function.
+     */
+    debounce(fn: (...args: any[]) => any, delay: number): (...args: any[]) => void {
+
+        let timeoutID: number;
+
+        const debounced = (...args: any[]): void => {
+            clearTimeout(timeoutID);
+
+            timeoutID = window.setTimeout(() => {
+                fn.apply(null, args);
+            }, delay);
+        };
+
+        return debounced;
+    }
+
+    /**
+     * Check whether the app can scan QR codes.
+     *
+     * @return Whether the app can scan QR codes.
+     */
+    canScanQR(): boolean {
+        return CoreApp.instance.isMobile();
+    }
+
+    /**
+     * Open a modal to scan a QR code.
+     *
+     * @param title Title of the modal. Defaults to "QR reader".
+     * @return Promise resolved with the captured text or undefined if cancelled or error.
+     */
+    scanQR(title?: string): Promise<string> {
+        return new Promise((resolve, reject): void => {
+            const modal = this.modalCtrl.create('CoreViewerQRScannerPage', {
+                title: title
+            }, { cssClass: 'core-modal-fullscreen'});
+
+            modal.present();
+
+            modal.onDidDismiss((data) => {
+                resolve(data);
+            });
+        });
+    }
+
+    /**
+     * Start scanning for a QR code.
+     *
+     * @return Promise resolved with the QR string, rejected if error or cancelled.
+     */
+    startScanQR(): Promise<string> {
+        if (!CoreApp.instance.isMobile()) {
+            return Promise.reject('QRScanner isn\'t available in desktop apps.');
+        }
+
+        // Ask the user for permission to use the camera.
+        // The scan method also does this, but since it returns an Observable we wouldn't be able to detect if the user denied.
+        return this.qrScanner.prepare().then((status) => {
+
+            if (!status.authorized) {
+                // No access to the camera, reject. In android this shouldn't happen, denying access passes through catch.
+                return Promise.reject('The user denied camera access.');
+            }
+
+            if (this.qrScanData && this.qrScanData.deferred) {
+                // Already scanning.
+                return this.qrScanData.deferred.promise;
+            }
+
+            // Start scanning.
+            this.qrScanData = {
+                deferred: this.promiseDefer(),
+                observable: this.qrScanner.scan().subscribe((text) => {
+
+                    // Text received, stop scanning and return the text.
+                    this.stopScanQR(text, false);
+                })
+            };
+
+            // Show the camera.
+            return this.qrScanner.show().then(() => {
+                document.body.classList.add('core-scanning-qr');
+
+                return this.qrScanData.deferred.promise;
+            }, (err) => {
+                this.stopScanQR(err, true);
+
+                return Promise.reject(err);
+            });
+
+        }).catch((err) => {
+            err.message = err.message || err._message;
+
+            return Promise.reject(err);
+        });
+    }
+
+    /**
+     * Stop scanning for QR code. If no param is provided, the app will consider the user cancelled.
+     *
+     * @param data If success, the text of the QR code. If error, the error object or message. Undefined for cancelled.
+     * @param error True if the data belongs to an error, false otherwise.
+     */
+    stopScanQR(data?: any, error?: boolean): void {
+
+        if (!this.qrScanData) {
+            // Not scanning.
+            return;
+        }
+
+        // Hide camera preview.
+        document.body.classList.remove('core-scanning-qr');
+        this.qrScanner.hide();
+        this.qrScanner.destroy();
+
+        this.qrScanData.observable.unsubscribe(); // Stop scanning.
+
+        if (error) {
+            this.qrScanData.deferred.reject(data);
+        } else if (typeof data != 'undefined') {
+            this.qrScanData.deferred.resolve(data);
+        } else {
+            this.qrScanData.deferred.reject(this.domUtils.createCanceledError());
+        }
+
+        delete this.qrScanData;
+    }
+
+    /**
+     * Ignore errors from a promise.
+     *
+     * @param promise Promise to ignore errors.
+     * @return Promise with ignored errors.
+     */
+    async ignoreErrors<T>(promise: Promise<T>): Promise<T | undefined> {
+        try {
+            const result = await promise;
+
+            return result;
+        } catch (error) {
+            // Ignore errors.
+        }
+    }
+
+    /**
+     * Wait some time.
+     *
+     * @param milliseconds Number of milliseconds to wait.
+     * @return Promise resolved after the time has passed.
+     */
+    wait(milliseconds: number): Promise<void> {
+        return new Promise((resolve, reject): void => {
+            setTimeout(resolve, milliseconds);
+        });
+    }
 }
+
+export class CoreUtils extends makeSingleton(CoreUtilsProvider) {}

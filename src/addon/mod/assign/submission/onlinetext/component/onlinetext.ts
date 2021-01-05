@@ -14,6 +14,7 @@
 
 import { Component, OnInit, ElementRef } from '@angular/core';
 import { FormBuilder, FormControl } from '@angular/forms';
+import { CoreSitesProvider } from '@providers/sites';
 import { CoreDomUtilsProvider } from '@providers/utils/dom';
 import { CoreTextUtilsProvider } from '@providers/utils/text';
 import { AddonModAssignProvider } from '../../../providers/assign';
@@ -35,16 +36,23 @@ export class AddonModAssignSubmissionOnlineTextComponent extends AddonModAssignS
     text: string;
     loaded: boolean;
     wordLimitEnabled: boolean;
+    currentUserId: number;
 
     protected wordCountTimeout: any;
     protected element: HTMLElement;
 
-    constructor(protected fb: FormBuilder, protected domUtils: CoreDomUtilsProvider, protected textUtils: CoreTextUtilsProvider,
-            protected assignProvider: AddonModAssignProvider, protected assignOfflineProvider: AddonModAssignOfflineProvider,
-            element: ElementRef) {
+    constructor(
+            protected fb: FormBuilder,
+            protected domUtils: CoreDomUtilsProvider,
+            protected textUtils: CoreTextUtilsProvider,
+            protected assignProvider: AddonModAssignProvider,
+            protected assignOfflineProvider: AddonModAssignOfflineProvider,
+            element: ElementRef,
+            sitesProvider: CoreSitesProvider) {
 
         super();
         this.element = element.nativeElement;
+        this.currentUserId = sitesProvider.getCurrentSiteUserId();
     }
 
     /**
@@ -75,8 +83,14 @@ export class AddonModAssignSubmissionOnlineTextComponent extends AddonModAssignS
 
                     if (text) {
                         // Open a new state with the interpolated contents.
-                        this.textUtils.expandText(this.plugin.name, text, this.component, this.assign.cmid, undefined, true,
-                                'module', this.assign.cmid, this.assign.course);
+                        this.textUtils.viewText(this.plugin.name, text, {
+                            component: this.component,
+                            componentId: this.assign.cmid,
+                            filter: true,
+                            contextLevel: 'module',
+                            instanceId: this.assign.cmid,
+                            courseId: this.assign.course,
+                        });
                     }
                 });
             } else {

@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Component, ViewChild } from '@angular/core';
+import { Component, ViewChild, ElementRef } from '@angular/core';
 import { IonicPage, NavController, NavParams, Content } from 'ionic-angular';
 import { TranslateService } from '@ngx-translate/core';
+import { CoreEventsProvider } from '@providers/events';
 import { CoreSitesProvider } from '@providers/sites';
 import { CoreDomUtilsProvider } from '@providers/utils/dom';
 import { CoreTextUtilsProvider } from '@providers/utils/text';
@@ -38,6 +39,8 @@ import { CoreFileUploaderProvider, CoreFileUploaderOptions } from '@core/fileupl
 })
 export class CoreLoginEmailSignupPage {
     @ViewChild(Content) content: Content;
+    @ViewChild('ageForm') ageFormElement: ElementRef;
+    @ViewChild('signupFormEl') signupFormElement: ElementRef;
 
     signupForm: FormGroup;
     siteUrl: string;
@@ -48,6 +51,8 @@ export class CoreLoginEmailSignupPage {
     countries: any;
     categories: any[];
     settingsLoaded = false;
+    allRequiredSupported = true;
+    signupUrl: string;
     captcha = {
         recaptcharesponse: ''
     };
@@ -77,12 +82,22 @@ export class CoreLoginEmailSignupPage {
     identificationFileErrors: any;
     checked: boolean;
 
-    constructor(private navCtrl: NavController, navParams: NavParams, private fb: FormBuilder, private wsProvider: CoreWSProvider,
-            private sitesProvider: CoreSitesProvider, private loginHelper: CoreLoginHelperProvider,
-            private domUtils: CoreDomUtilsProvider, private translate: TranslateService, private utils: CoreUtilsProvider,
-            private textUtils: CoreTextUtilsProvider, private userProfileFieldDelegate: CoreUserProfileFieldDelegate, 
-            private fileUploaderHelper: CoreFileUploaderHelperProvider, private mimetypeUtils: CoreMimetypeUtilsProvider, 
+    constructor(protected navCtrl: NavController,
+            navParams: NavParams,
+            protected fb: FormBuilder,
+            protected wsProvider: CoreWSProvider,
+            protected sitesProvider: CoreSitesProvider,
+            protected loginHelper: CoreLoginHelperProvider,
+            protected domUtils: CoreDomUtilsProvider,
+            protected translate: TranslateService,
+            protected utils: CoreUtilsProvider,
+            protected textUtils: CoreTextUtilsProvider,
+            protected userProfileFieldDelegate: CoreUserProfileFieldDelegate,
+            protected eventsProvider: CoreEventsProvider,
+            private fileUploaderHelper: CoreFileUploaderHelperProvider, 
+            private mimetypeUtils: CoreMimetypeUtilsProvider, 
             private fileUploaderProvider: CoreFileUploaderProvider) {
+
 
         this.siteUrl = navParams.get('siteUrl');
 
@@ -209,65 +224,72 @@ export class CoreLoginEmailSignupPage {
     }
 
     /**
-     * Fetch the required data from the server-
+     * Fetch the required data from the server.
+     *
+     * @return Promise resolved when done.
      */
-    protected fetchData(): Promise<any> {
-        // Get site config.
-        return this.sitesProvider.getSitePublicConfig(this.siteUrl).then((config) => {
-            this.siteConfig = config;
+    protected async fetchData(): Promise<void> {
+        try {
+            // Get site config.
+            this.siteConfig = await this.sitesProvider.getSitePublicConfig(this.siteUrl);
+            this.signupUrl = this.textUtils.concatenatePaths(this.siteConfig.httpswwwroot, 'login/signup.php');
 
-            if (this.treatSiteConfig(config)) {
+            if (this.treatSiteConfig(this.siteConfig)) {
                 // Check content verification.
                 if (typeof this.ageDigitalConsentVerification == 'undefined') {
-                    return this.wsProvider.callAjax('core_auth_is_age_digital_consent_verification_enabled', {},
-                            {siteUrl: this.siteUrl }).then((result) => {
 
-                        this.ageDigitalConsentVerification = result.status;
-                    }).catch((e) => {
-                        // Capture exceptions, fail silently.
-                    }).then(() => {
-                        return this.getSignupSettings();
-                    });
-                } else {
-                    return this.getSignupSettings();
+                    const result = await this.utils.ignoreErrors(this.wsProvider.callAjax(
+                            'core_auth_is_age_digital_consent_verification_enabled', {}, {siteUrl: this.siteUrl }));
+
+                    this.ageDigitalConsentVerification = result && result.status;
                 }
+
+                await this.getSignupSettings();
             }
-        }).then(() => {
+
             this.completeFormGroup();
-        }).catch((err) => {
-            this.domUtils.showErrorModal(err);
-        });
+        } catch (error) {
+            if (this.allRequiredSupported) {
+                this.domUtils.showErrorModal(error);
+            }
+        }
     }
 
     /**
      * Get signup settings from server.
+     *
+     * @return Promise resolved when done.
      */
-    protected getSignupSettings(): Promise<any> {
-        return this.wsProvider.callAjax('auth_emailadmin_get_signup_settings', {}, { siteUrl: this.siteUrl }).then((settings) => {
-            this.settings = settings;
-            this.categories = this.loginHelper.formatProfileFieldsForSignup(settings.profilefields);
 
-            if (this.settings.recaptchapublickey) {
-                this.captcha.recaptcharesponse = ''; // Reset captcha.
-            }
+    protected async getSignupSettings(): Promise<void> {
+        const settings = await this.wsProvider.callAjax('auth_emailadmin_get_signup_settings', {}, { siteUrl: this.siteUrl });
 
-            if (!this.countryControl.value) {
-                this.countryControl.setValue(settings.country || '');
-            }
 
-            this.namefieldsErrors = {};
-            if (settings.namefields) {
-                settings.namefields.forEach((field) => {
-                    this.namefieldsErrors[field] = this.loginHelper.getErrorMessages('core.login.missing' + field);
-                });
-            }
+        if (this.userProfileFieldDelegate.hasRequiredUnsupportedField(settings.profilefields)) {
+            this.allRequiredSupported = false;
 
-            // this.qualification.name = '';
+            throw new Error(this.translate.instant('core.login.signuprequiredfieldnotsupported'));
+        }
 
-            return this.utils.getCountryListSorted().then((countries) => {
-                this.countries = countries;
+        this.settings = settings;
+        this.categories = this.loginHelper.formatProfileFieldsForSignup(settings.profilefields);
+
+        if (this.settings.recaptchapublickey) {
+            this.captcha.recaptcharesponse = ''; // Reset captcha.
+        }
+
+        if (!this.countryControl.value) {
+            this.countryControl.setValue(settings.country || '');
+        }
+
+        this.namefieldsErrors = {};
+        if (settings.namefields) {
+            settings.namefields.forEach((field) => {
+                this.namefieldsErrors[field] = this.loginHelper.getErrorMessages('core.login.missing' + field);
             });
-        });
+        }
+
+        this.countries = await this.utils.getCountryListSorted();
     }
 
     /**
@@ -362,8 +384,10 @@ export class CoreLoginEmailSignupPage {
                     if (result.success) {
                         // LMSACE CHANGES
                         this.uploadSelectDocuments(params.username, this.qualification, 'file_qualification');
-                        this.uploadSelectDocuments(params.username, this.identification, 'file_identification');
-                    
+                        this.uploadSelectDocuments(params.username, this.identification, 'file_identification');   
+
+                        this.domUtils.triggerFormSubmittedEvent(this.signupFormElement, true);
+
                         // Show alert and ho back.
                         const message = this.translate.instant('core.login.emailconfirmsent', { $a: params.email });
                         this.domUtils.showAlert(this.translate.instant('core.success'), message);
@@ -402,7 +426,7 @@ export class CoreLoginEmailSignupPage {
      * Show authentication instructions.
      */
     protected showAuthInstructions(): void {
-        this.textUtils.expandText(this.translate.instant('core.login.instructions'), this.authInstructions);
+        this.textUtils.viewText(this.translate.instant('core.login.instructions'), this.authInstructions);
     }
 
     /**
@@ -433,6 +457,9 @@ export class CoreLoginEmailSignupPage {
         params.age = parseInt(params.age, 10); // Use just the integer part.
 
         this.wsProvider.callAjax('core_auth_is_minor', params, {siteUrl: this.siteUrl}).then((result) => {
+
+            this.domUtils.triggerFormSubmittedEvent(this.ageFormElement, true);
+
             if (!result.status) {
                 if (this.countryControl.value) {
                     this.signUpCountryControl.setValue(this.countryControl.value);

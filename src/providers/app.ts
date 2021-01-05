@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Injectable, NgZone } from '@angular/core';
+import { Injectable, NgZone, ApplicationRef } from '@angular/core';
 import { Platform, App, NavController, MenuController } from 'ionic-angular';
 import { Keyboard } from '@ionic-native/keyboard';
 import { Network } from '@ionic-native/network';
@@ -21,8 +21,9 @@ import { StatusBar } from '@ionic-native/status-bar';
 import { CoreDbProvider } from './db';
 import { CoreLoggerProvider } from './logger';
 import { CoreEventsProvider } from './events';
-import { SQLiteDB } from '@classes/sqlitedb';
+import { SQLiteDB, SQLiteDBTableSchema } from '@classes/sqlitedb';
 import { CoreConfigConstants } from '../configconstants';
+import { makeSingleton } from '@singletons/core.singletons';
 
 /**
  * Data stored for a redirect to another page/site.
@@ -50,6 +51,82 @@ export interface CoreRedirectData {
 }
 
 /**
+ * Store config data.
+ */
+export interface CoreStoreConfig {
+    /**
+     * ID of the Apple store where the desktop Mac app is uploaded.
+     */
+    mac?: string;
+
+    /**
+     * ID of the Windows store where the desktop Windows app is uploaded.
+     */
+    windows?: string;
+
+    /**
+     * Url with the desktop linux download link.
+     */
+    linux?: string;
+
+    /**
+     * Fallback URL when the desktop options is not set.
+     */
+    desktop?: string;
+
+    /**
+     * ID of the Apple store where the mobile iOS app is uploaded.
+     */
+    ios?: string;
+
+    /**
+     * ID of the Google play store where the android app is uploaded.
+     */
+    android?: string;
+
+    /**
+     * Fallback URL when the mobile options is not set.
+     */
+    mobile?: string;
+
+    /**
+     * Fallback URL when the other fallbacks options are not set.
+     */
+    default?: string;
+}
+
+/**
+ * App DB schema and migration function.
+ */
+export interface CoreAppSchema {
+    /**
+     * Name of the schema.
+     */
+    name: string;
+
+    /**
+     * Latest version of the schema (integer greater than 0).
+     */
+    version: number;
+
+    /**
+     * Tables to create when installing or upgrading the schema.
+     */
+    tables?: SQLiteDBTableSchema[];
+
+    /**
+     * Migrates the schema to the latest version.
+     *
+     * Called when installing and upgrading the schema, after creating the defined tables.
+     *
+     * @param db The affected DB.
+     * @param oldVersion Old version of the schema or 0 if not installed.
+     * @return Promise resolved when done.
+     */
+    migrate?(db: SQLiteDB, oldVersion: number): Promise<any>;
+}
+
+/**
  * Factory to provide some global functionalities, like access to the global app database.
  * @description
  * Each service or component should be responsible of creating their own database tables. Example:
@@ -66,22 +143,54 @@ export class CoreAppProvider {
     protected logger;
     protected ssoAuthenticationPromise: Promise<any>;
     protected isKeyboardShown = false;
+    protected _isKeyboardOpening = false;
+    protected _isKeyboardClosing = false;
     protected backActions = [];
     protected mainMenuId = 0;
     protected mainMenuOpen: number;
     protected forceOffline = false;
 
-    constructor(dbProvider: CoreDbProvider, private platform: Platform, private keyboard: Keyboard, private appCtrl: App,
-            private network: Network, logger: CoreLoggerProvider, private events: CoreEventsProvider, zone: NgZone,
-            private menuCtrl: MenuController, private statusBar: StatusBar) {
+    // Variables for DB.
+    protected createVersionsTableReady: Promise<any>;
+    protected SCHEMA_VERSIONS_TABLE = 'schema_versions';
+    protected versionsTableSchema: SQLiteDBTableSchema = {
+        name: this.SCHEMA_VERSIONS_TABLE,
+        columns: [
+            {
+                name: 'name',
+                type: 'TEXT',
+                primaryKey: true,
+            },
+            {
+                name: 'version',
+                type: 'INTEGER',
+            },
+        ],
+    };
+
+    constructor(dbProvider: CoreDbProvider,
+            private platform: Platform,
+            private keyboard: Keyboard,
+            private appCtrl: App,
+            private network: Network,
+            logger: CoreLoggerProvider,
+            private events: CoreEventsProvider,
+            zone: NgZone,
+            private menuCtrl: MenuController,
+            private statusBar: StatusBar,
+            appRef: ApplicationRef) {
+
         this.logger = logger.getInstance('CoreAppProvider');
         this.db = dbProvider.getDB(this.DBNAME);
+
+        // Create the schema versions table.
+        this.createVersionsTableReady = this.db.createTableFromSchema(this.versionsTableSchema);
 
         this.keyboard.onKeyboardShow().subscribe((data) => {
             // Execute the callback in the Angular zone, so change detection doesn't stop working.
             zone.run(() => {
                 document.body.classList.add('keyboard-is-open');
-                this.isKeyboardShown = true;
+                this.setKeyboardShown(true);
                 // Error on iOS calculating size.
                 // More info: https://github.com/ionic-team/ionic-plugin-keyboard/issues/276 .
                 events.trigger(CoreEventsProvider.KEYBOARD_CHANGE, data.keyboardHeight);
@@ -91,8 +200,22 @@ export class CoreAppProvider {
             // Execute the callback in the Angular zone, so change detection doesn't stop working.
             zone.run(() => {
                 document.body.classList.remove('keyboard-is-open');
-                this.isKeyboardShown = false;
+                this.setKeyboardShown(false);
                 events.trigger(CoreEventsProvider.KEYBOARD_CHANGE, 0);
+            });
+        });
+        this.keyboard.onKeyboardWillShow().subscribe((data) => {
+            // Execute the callback in the Angular zone, so change detection doesn't stop working.
+            zone.run(() => {
+                this._isKeyboardOpening = true;
+                this._isKeyboardClosing = false;
+            });
+        });
+        this.keyboard.onKeyboardWillHide().subscribe((data) => {
+            // Execute the callback in the Angular zone, so change detection doesn't stop working.
+            zone.run(() => {
+                this._isKeyboardOpening = false;
+                this._isKeyboardClosing = true;
             });
         });
 
@@ -100,9 +223,10 @@ export class CoreAppProvider {
             this.backButtonAction();
         }, 100);
 
-        // Export the app provider so Behat tests can change the forceOffline flag.
+        // Export the app provider and appRef to control the application in Behat tests.
         if (CoreAppProvider.isAutomated()) {
             (<any> window).appProvider = this;
+            (<any> window).appRef = appRef;
         }
     }
 
@@ -134,6 +258,47 @@ export class CoreAppProvider {
     }
 
     /**
+     * Install and upgrade a certain schema.
+     *
+     * @param schema The schema to create.
+     * @return Promise resolved when done.
+     */
+    async createTablesFromSchema(schema: CoreAppSchema): Promise<any> {
+        this.logger.debug(`Apply schema to app DB: ${schema.name}`);
+
+        let oldVersion;
+
+        try {
+            // Wait for the schema versions table to be created.
+            await this.createVersionsTableReady;
+
+            // Fetch installed version of the schema.
+            const entry = await this.db.getRecord(this.SCHEMA_VERSIONS_TABLE, {name: schema.name});
+            oldVersion = entry.version;
+        } catch (error) {
+            // No installed version yet.
+            oldVersion = 0;
+        }
+
+        if (oldVersion >= schema.version) {
+            // Version already installed, nothing else to do.
+            return;
+        }
+
+        this.logger.debug(`Migrating schema '${schema.name}' of app DB from version ${oldVersion} to ${schema.version}`);
+
+        if (schema.tables) {
+            await this.db.createTablesFromSchema(schema.tables);
+        }
+        if (schema.migrate) {
+            await schema.migrate(this.db, oldVersion);
+        }
+
+        // Set installed version.
+        await this.db.insertRecord(this.SCHEMA_VERSIONS_TABLE, {name: schema.name, version: schema.version});
+    }
+
+    /**
      * Get the application global database.
      *
      * @return App's DB.
@@ -162,6 +327,44 @@ export class CoreAppProvider {
     }
 
     /**
+     * Get app store URL.
+     *
+     * @param  storesConfig Config params to send the user to the right place.
+     * @return Store URL.
+     */
+     getAppStoreUrl(storesConfig: CoreStoreConfig): string {
+        if (this.isMac() && storesConfig.mac) {
+            return 'itms-apps://itunes.apple.com/app/' + storesConfig.mac;
+        }
+
+        if (this.isWindows() && storesConfig.windows) {
+            return 'https://www.microsoft.com/p/' + storesConfig.windows;
+        }
+
+        if (this.isLinux() && storesConfig.linux) {
+            return storesConfig.linux;
+        }
+
+        if (this.isDesktop() && storesConfig.desktop) {
+            return storesConfig.desktop;
+        }
+
+        if (this.isIOS() && storesConfig.ios) {
+            return 'itms-apps://itunes.apple.com/app/' + storesConfig.ios;
+        }
+
+        if (this.isAndroid() && storesConfig.android) {
+            return 'market://details?id=' + storesConfig.android;
+        }
+
+        if (this.isMobile() && storesConfig.mobile) {
+            return storesConfig.mobile;
+        }
+
+        return storesConfig.default || null;
+    }
+
+    /**
      * Returns whether the user agent is controlled by automation. I.e. Behat testing.
      *
      * @return True if the user agent is controlled by automation, false otherwise.
@@ -187,7 +390,7 @@ export class CoreAppProvider {
      * @return Whether the app is running in an Android mobile or tablet device.
      */
     isAndroid(): boolean {
-        return this.platform.is('android');
+        return this.isMobile() && this.platform.is('android');
     }
 
     /**
@@ -207,7 +410,25 @@ export class CoreAppProvider {
      * @return Whether the app is running in an iOS mobile or tablet device.
      */
     isIOS(): boolean {
-        return this.platform.is('ios');
+        return this.isMobile() && !this.platform.is('android');
+    }
+
+    /**
+     * Check if the keyboard is closing.
+     *
+     * @return Whether keyboard is closing (animating).
+     */
+    isKeyboardClosing(): boolean {
+        return this._isKeyboardClosing;
+    }
+
+    /**
+     * Check if the keyboard is being opened.
+     *
+     * @return Whether keyboard is opening (animating).
+     */
+    isKeyboardOpening(): boolean {
+        return this._isKeyboardOpening;
     }
 
     /**
@@ -347,9 +568,20 @@ export class CoreAppProvider {
      */
     openKeyboard(): void {
         // Open keyboard is not supported in desktop and in iOS.
-        if (this.isMobile() && !this.platform.is('ios')) {
+        if (this.isAndroid()) {
             this.keyboard.show();
         }
+    }
+
+    /**
+     * Set keyboard shown or hidden.
+     *
+     * @param Whether the keyboard is shown or hidden.
+     */
+    protected setKeyboardShown(shown: boolean): void {
+        this.isKeyboardShown = shown;
+        this._isKeyboardOpening = false;
+        this._isKeyboardClosing = false;
     }
 
     /**
@@ -420,6 +652,35 @@ export class CoreAppProvider {
      */
     waitForSSOAuthentication(): Promise<any> {
         return this.ssoAuthenticationPromise || Promise.resolve();
+    }
+
+    /**
+     * Wait until the application is resumed.
+     *
+     * @param timeout Maximum time to wait, use null to wait forever.
+     */
+    async waitForResume(timeout: number | null = null): Promise<void> {
+        let resolve: Function;
+        let resumeSubscription: any;
+        let timeoutId: NodeJS.Timer | false;
+
+        const promise = new Promise((r): any => resolve = r);
+        const stopWaiting = (): any => {
+            if (!resolve) {
+                return;
+            }
+
+            resolve();
+            resumeSubscription.unsubscribe();
+            timeoutId && clearTimeout(timeoutId);
+
+            resolve = null;
+        };
+
+        resumeSubscription = this.platform.resume.subscribe(stopWaiting);
+        timeoutId = timeout ? setTimeout(stopWaiting, timeout) : false;
+
+        await promise;
     }
 
     /**
@@ -565,23 +826,23 @@ export class CoreAppProvider {
      * Set StatusBar color depending on platform.
      */
     setStatusBarColor(): void {
-        if (typeof CoreConfigConstants.statusbarbgios == 'string' && this.platform.is('ios')) {
+        if (typeof CoreConfigConstants.statusbarbgios == 'string' && this.isIOS()) {
             // IOS Status bar properties.
             this.statusBar.overlaysWebView(false);
             this.statusBar.backgroundColorByHexString(CoreConfigConstants.statusbarbgios);
             CoreConfigConstants.statusbarlighttextios ? this.statusBar.styleLightContent() : this.statusBar.styleDefault();
-        } else if (typeof CoreConfigConstants.statusbarbgandroid == 'string' && this.platform.is('android')) {
+        } else if (typeof CoreConfigConstants.statusbarbgandroid == 'string' && this.isAndroid()) {
             // Android Status bar properties.
             this.statusBar.backgroundColorByHexString(CoreConfigConstants.statusbarbgandroid);
             CoreConfigConstants.statusbarlighttextandroid ? this.statusBar.styleLightContent() : this.statusBar.styleDefault();
         } else if (typeof CoreConfigConstants.statusbarbg == 'string') {
             // Generic Status bar properties.
-            this.platform.is('ios') && this.statusBar.overlaysWebView(false);
+            this.isIOS() && this.statusBar.overlaysWebView(false);
             this.statusBar.backgroundColorByHexString(CoreConfigConstants.statusbarbg);
             CoreConfigConstants.statusbarlighttext ? this.statusBar.styleLightContent() : this.statusBar.styleDefault();
         } else {
             // Default Status bar properties.
-            this.platform.is('android') ? this.statusBar.styleLightContent() : this.statusBar.styleDefault();
+            this.isAndroid() ? this.statusBar.styleLightContent() : this.statusBar.styleDefault();
         }
     }
 
@@ -590,11 +851,11 @@ export class CoreAppProvider {
      */
     resetStatusBarColor(): void {
         if (typeof CoreConfigConstants.statusbarbgremotetheme == 'string' &&
-                ((typeof CoreConfigConstants.statusbarbgios == 'string' && this.platform.is('ios')) ||
-                (typeof CoreConfigConstants.statusbarbgandroid == 'string' && this.platform.is('android')) ||
+                ((typeof CoreConfigConstants.statusbarbgios == 'string' && this.isIOS()) ||
+                (typeof CoreConfigConstants.statusbarbgandroid == 'string' && this.isAndroid()) ||
                 typeof CoreConfigConstants.statusbarbg == 'string')) {
             // If the status bar has been overriden and there's a fallback color for remote themes, use it now.
-            this.platform.is('ios') && this.statusBar.overlaysWebView(false);
+            this.isIOS() && this.statusBar.overlaysWebView(false);
             this.statusBar.backgroundColorByHexString(CoreConfigConstants.statusbarbgremotetheme);
             CoreConfigConstants.statusbarlighttextremotetheme ?
                 this.statusBar.styleLightContent() : this.statusBar.styleDefault();
@@ -610,3 +871,5 @@ export class CoreAppProvider {
         this.forceOffline = !!value;
     }
 }
+
+export class CoreApp extends makeSingleton(CoreAppProvider) {}

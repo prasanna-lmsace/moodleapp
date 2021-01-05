@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, ViewChild, ElementRef } from '@angular/core';
 import { FormControl } from '@angular/forms';
 import { IonicPage, NavController, NavParams } from 'ionic-angular';
 import { TranslateService } from '@ngx-translate/core';
@@ -34,6 +34,8 @@ import { AddonModGlossaryHelperProvider } from '../../providers/helper';
     templateUrl: 'edit.html',
 })
 export class AddonModGlossaryEditPage implements OnInit {
+    @ViewChild('editFormEl') formElement: ElementRef;
+
     component = AddonModGlossaryProvider.COMPONENT;
     loaded = false;
     entry = {
@@ -51,6 +53,7 @@ export class AddonModGlossaryEditPage implements OnInit {
     attachments = [];
     definitionControl = new FormControl();
     categories = [];
+    editorExtraParams: {[name: string]: any} = {};
 
     protected courseId: number;
     protected module: any;
@@ -113,12 +116,18 @@ export class AddonModGlossaryEditPage implements OnInit {
                     this.originalData.files = files.slice();
                 });
             }
+
+            if (entry.id) {
+                this.editorExtraParams.id = entry.id;
+            }
         }
 
         this.definitionControl.setValue(this.entry.definition);
 
         Promise.resolve(promise).then(() => {
-            this.glossaryProvider.getAllCategories(this.glossary.id).then((categories) => {
+            this.glossaryProvider.getAllCategories(this.glossary.id, {
+                cmId: this.module.id,
+            }).then((categories) => {
                 this.categories = categories;
             }).finally(() => {
                 this.loaded = true;
@@ -140,20 +149,20 @@ export class AddonModGlossaryEditPage implements OnInit {
      *
      * @return Resolved if we can leave it, rejected if not.
      */
-    ionViewCanLeave(): boolean | Promise<void> {
-        let promise: any;
-
-        if (!this.saved && this.glossaryHelper.hasEntryDataChanged(this.entry, this.attachments, this.originalData)) {
-            // Show confirmation if some data has been modified.
-            promise = this.domUtils.showConfirm(this.translate.instant('core.confirmcanceledit'));
-        } else {
-            promise = Promise.resolve();
+    async ionViewCanLeave(): Promise<void> {
+        if (this.saved) {
+            return;
         }
 
-        return promise.then(() => {
-            // Delete the local files from the tmp folder.
-            this.uploaderProvider.clearTmpFiles(this.attachments);
-        });
+        if (this.glossaryHelper.hasEntryDataChanged(this.entry, this.attachments, this.originalData)) {
+            // Show confirmation if some data has been modified.
+            await this.domUtils.showConfirm(this.translate.instant('core.confirmcanceledit'));
+        }
+
+        // Delete the local files from the tmp folder.
+        this.uploaderProvider.clearTmpFiles(this.attachments);
+
+        this.domUtils.triggerFormCancelledEvent(this.formElement, this.sitesProvider.getCurrentSiteId());
     }
 
     /**
@@ -208,8 +217,10 @@ export class AddonModGlossaryEditPage implements OnInit {
                 let promise;
                 if (this.entry && !this.glossary.allowduplicatedentries) {
                     // Check if the entry is duplicated in online or offline mode.
-                    promise = this.glossaryProvider.isConceptUsed(this.glossary.id, this.entry.concept, this.entry.timecreated)
-                        .then((used) => {
+                    promise = this.glossaryProvider.isConceptUsed(this.glossary.id, this.entry.concept, {
+                        timeCreated: this.entry.timecreated,
+                        cmId: this.module.id,
+                    }).then((used) => {
                             if (used) {
                                 // There's a entry with same name, reject with error message.
                                 return Promise.reject(this.translate.instant('addon.mod_glossary.errconceptalreadyexists'));
@@ -230,7 +241,12 @@ export class AddonModGlossaryEditPage implements OnInit {
                 // Try to send it to server.
                 // Don't allow offline if there are attachments since they were uploaded fine.
                 return this.glossaryProvider.addEntry(this.glossary.id, this.entry.concept, definition, this.courseId, options,
-                    attach, timecreated, undefined, this.entry, !this.attachments.length, !this.glossary.allowduplicatedentries);
+                    attach, {
+                        timeCreated: timecreated,
+                        discardEntry: this.entry,
+                        allowOffline: !this.attachments.length,
+                        checkDuplicates: !this.glossary.allowduplicatedentries,
+                    });
             }
         }).then((entryId) => {
              // Delete the local files from the tmp folder.
@@ -239,12 +255,15 @@ export class AddonModGlossaryEditPage implements OnInit {
             if (entryId) {
                 // Data sent to server, delete stored files (if any).
                 this.glossaryHelper.deleteStoredFiles(this.glossary.id, this.entry.concept, timecreated);
+                this.eventsProvider.trigger(CoreEventsProvider.ACTIVITY_DATA_SENT, { module: 'glossary' });
             }
 
             const data = {
                 glossaryId: this.glossary.id,
             };
             this.eventsProvider.trigger(AddonModGlossaryProvider.ADD_ENTRY_EVENT, data, this.sitesProvider.getCurrentSiteId());
+
+            this.domUtils.triggerFormSubmittedEvent(this.formElement, !!entryId, this.sitesProvider.getCurrentSiteId());
 
             this.saved = true;
             this.navCtrl.pop();

@@ -14,6 +14,9 @@
 
 import { Component } from '@angular/core';
 import { IonicPage, ViewController } from 'ionic-angular';
+import { TranslateService } from '@ngx-translate/core';
+import { CoreUtilsProvider } from '@providers/utils/utils';
+import { CoreLoginHelperProvider } from '../../providers/helper';
 
 /**
  * Component that displays some help regarding the CoreLoginSitePage.
@@ -24,7 +27,22 @@ import { IonicPage, ViewController } from 'ionic-angular';
     templateUrl: 'site-help.html',
 })
 export class CoreLoginSiteHelpPage {
-    constructor(private viewCtrl: ViewController) { }
+
+    urlImageHtml: string;
+    setupLinkHtml: string;
+    qrCodeImageHtml: string;
+    canScanQR: boolean;
+
+    constructor(protected viewCtrl: ViewController,
+            protected translate: TranslateService,
+            protected utils: CoreUtilsProvider) {
+
+        this.canScanQR = this.utils.canScanQR();
+        this.urlImageHtml = CoreLoginHelperProvider.FAQ_URL_IMAGE_HTML;
+        this.qrCodeImageHtml = CoreLoginHelperProvider.FAQ_QRCODE_IMAGE_HTML;
+        this.setupLinkHtml = '<a href="https://moodle.com/getstarted/" title="' +
+                this.translate.instant('core.login.faqsetupsitelinktitle') + '">https://moodle.com/getstarted/</a>';
+    }
 
     /**
      * Close help modal.

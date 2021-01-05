@@ -15,6 +15,9 @@
 import { Injectable } from '@angular/core';
 import { CoreLangProvider } from '../lang';
 import { CoreTextUtilsProvider } from './text';
+import { makeSingleton } from '@singletons/core.singletons';
+import { CoreConfigConstants } from '../../configconstants';
+import { CoreUrl } from '@singletons/url';
 
 /*
  * "Utils" service with helper functions for URLs.
@@ -111,10 +114,10 @@ export class CoreUrlUtilsProvider {
      * @param url URL to treat.
      * @return Object with the params.
      */
-    extractUrlParams(url: string): any {
+    extractUrlParams(url: string): {[name: string]: string} {
         const regex = /[?&]+([^=&]+)=?([^&]*)?/gi,
             subParamsPlaceholder = '@@@SUBPARAMS@@@',
-            params: any = {},
+            params: {[name: string]: string} = {},
             urlAndHash = url.split('#'),
             questionMarkSplit = urlAndHash[0].split('?');
         let subParams;
@@ -179,33 +182,19 @@ export class CoreUrlUtilsProvider {
             return url;
         }
 
-        // Check if is a valid URL (contains the pluginfile endpoint) and belongs to the site.
-        if (!this.isPluginFileUrl(url) || url.indexOf(this.textUtils.addEndingSlash(siteUrl)) !== 0) {
-            return url;
-        }
-      
         if (canUseTokenPluginFile) {
             // Use tokenpluginfile.php.
             url = url.replace(/(\/webservice)?\/pluginfile\.php/, '/tokenpluginfile.php/' + accessKey);
-
-            return url;
-        }
-
-        // No access key, use pluginfile.php. Check if the URL already has params.
-        if (url.match(/\?[^=]+=/)) {
-            url += '&';
         } else {
-            url += '?';
-        }
-        // Always send offline=1 (for external repositories). It shouldn't cause problems for local files or old Moodles.
-        url += 'token=' + token + '&offline=1';
+            // Use pluginfile.php. Some webservices returns directly the correct download url, others not.
+            if (url.indexOf(this.textUtils.concatenatePaths(siteUrl, 'pluginfile.php')) === 0) {
+                url = url.replace('/pluginfile', '/webservice/pluginfile');
+            }
 
-        // Some webservices returns directly the correct download url, others not.
-        if (url.indexOf(this.textUtils.concatenatePaths(siteUrl, 'pluginfile.php')) === 0) {
-            url = url.replace('/pluginfile', '/webservice/pluginfile');
+            url = this.addParamsToUrl(url, {token: token});
         }
 
-        return url;
+        return this.addParamsToUrl(url, {offline: 1}); // Always send offline=1 (it's for external repositories).
     }
 
     /**
@@ -223,7 +212,7 @@ export class CoreUrlUtilsProvider {
             url = 'https://' + url;
         }
 
-        // http allways in lowercase.
+        // http always in lowercase.
         url = url.replace(/^http/i, 'http');
         url = url.replace(/^https/i, 'https');
 
@@ -424,6 +413,36 @@ export class CoreUrlUtilsProvider {
     }
 
     /**
+     * Check whether an URL belongs to a local file.
+     *
+     * @param url URL to check.
+     * @return Whether the URL belongs to a local file.
+     */
+    isLocalFileUrl(url: string): boolean {
+        const urlParts = CoreUrl.parse(url);
+
+        return this.isLocalFileUrlScheme(urlParts.protocol, urlParts.domain);
+    }
+
+    /**
+     * Check whether a URL scheme belongs to a local file.
+     *
+     * @param scheme Scheme to check.
+     * @param domain The domain. Needed because in Android the WebView scheme is http.
+     * @return Whether the scheme belongs to a local file.
+     */
+    isLocalFileUrlScheme(scheme: string, domain: string): boolean {
+        if (scheme) {
+            scheme = scheme.toLowerCase();
+        }
+
+        return scheme == 'cdvfile' ||
+                scheme == 'file' ||
+                scheme == 'filesystem' ||
+                scheme == CoreConfigConstants.ioswebviewscheme;
+    }
+
+    /**
      * Returns if a URL is a pluginfile URL.
      *
      * @param url The URL to test.
@@ -469,4 +488,34 @@ export class CoreUrlUtilsProvider {
 
         return matches && matches[0];
     }
+
+    /**
+     * Modifies a pluginfile URL to use the default pluginfile script instead of the webservice one.
+     *
+     * @param url The url to be fixed.
+     * @param siteUrl The URL of the site the URL belongs to.
+     * @return Modified URL.
+     */
+    unfixPluginfileURL(url: string, siteUrl?: string): string {
+        if (!url) {
+            return '';
+        }
+
+        url = url.replace(/&amp;/g, '&');
+
+        // It site URL is supplied, check if the URL belongs to the site.
+        if (siteUrl && url.indexOf(this.textUtils.addEndingSlash(siteUrl)) !== 0) {
+            return url;
+        }
+
+        // Not a pluginfile URL. Treat webservice/pluginfile case.
+        url = url.replace(/\/webservice\/pluginfile\.php\//, '/pluginfile.php/');
+
+        // Make sure the URL doesn't contain the token.
+        url.replace(/([?&])token=[^&]*&?/, '$1');
+
+        return url;
+    }
 }
+
+export class CoreUrlUtils extends makeSingleton(CoreUrlUtilsProvider) {}

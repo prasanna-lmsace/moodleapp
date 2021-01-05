@@ -13,11 +13,10 @@
 // limitations under the License.
 
 import { Injectable } from '@angular/core';
-import { Http, Response } from '@angular/http';
 import { CoreFileProvider } from '@providers/file';
 import { CoreFilepoolProvider } from '@providers/filepool';
 import { CoreLoggerProvider } from '@providers/logger';
-import { CoreSitesProvider } from '@providers/sites';
+import { CoreSitesProvider, CoreSitesCommonWSOptions } from '@providers/sites';
 import { CoreDomUtilsProvider } from '@providers/utils/dom';
 import { CoreTextUtilsProvider } from '@providers/utils/text';
 import { CoreUtilsProvider } from '@providers/utils/utils';
@@ -25,7 +24,26 @@ import { CoreCourseProvider } from '@core/course/providers/course';
 import { CoreCourseLogHelperProvider } from '@core/course/providers/log-helper';
 import { CoreSite } from '@classes/site';
 import { CoreTagItem } from '@core/tag/providers/tag';
-import { CoreWSExternalWarning, CoreWSExternalFile } from '@providers/ws';
+import { CoreWSProvider, CoreWSExternalWarning, CoreWSExternalFile } from '@providers/ws';
+
+/**
+ * Constants to define how the chapters and subchapters of a book should be displayed in that table of contents.
+ */
+export const enum AddonModBookNumbering {
+    NONE = 0,
+    NUMBERS = 1,
+    BULLETS = 2,
+    INDENTED = 3,
+}
+
+/**
+ * Constants to define the navigation style used within a book.
+ */
+export const enum AddonModBookNavStyle {
+    TOC_ONLY = 0,
+    IMAGE = 1,
+    TEXT = 2,
+}
 
 /**
  * Service that provides some features for books.
@@ -37,10 +55,16 @@ export class AddonModBookProvider {
     protected ROOT_CACHE_KEY = 'mmaModBook:';
     protected logger;
 
-    constructor(logger: CoreLoggerProvider, private sitesProvider: CoreSitesProvider, private textUtils: CoreTextUtilsProvider,
-            private fileProvider: CoreFileProvider, private filepoolProvider: CoreFilepoolProvider, private http: Http,
-            private utils: CoreUtilsProvider, private courseProvider: CoreCourseProvider, private domUtils: CoreDomUtilsProvider,
-            private logHelper: CoreCourseLogHelperProvider) {
+    constructor(logger: CoreLoggerProvider,
+            protected sitesProvider: CoreSitesProvider,
+            protected textUtils: CoreTextUtilsProvider,
+            protected fileProvider: CoreFileProvider,
+            protected filepoolProvider: CoreFilepoolProvider,
+            protected wsProvider: CoreWSProvider,
+            protected utils: CoreUtilsProvider,
+            protected courseProvider: CoreCourseProvider,
+            protected domUtils: CoreDomUtilsProvider,
+            protected logHelper: CoreCourseLogHelperProvider) {
         this.logger = logger.getInstance('AddonModBookProvider');
     }
 
@@ -49,11 +73,11 @@ export class AddonModBookProvider {
      *
      * @param courseId Course ID.
      * @param cmId Course module ID.
-     * @param siteId Site ID. If not defined, current site.
+     * @param options Other options.
      * @return Promise resolved when the book is retrieved.
      */
-    getBook(courseId: number, cmId: number, siteId?: string): Promise<AddonModBookBook> {
-        return this.getBookByField(courseId, 'coursemodule', cmId, siteId);
+    getBook(courseId: number, cmId: number, options: CoreSitesCommonWSOptions = {}): Promise<AddonModBookBook> {
+        return this.getBookByField(courseId, 'coursemodule', cmId, options);
     }
 
     /**
@@ -65,15 +89,19 @@ export class AddonModBookProvider {
      * @param siteId Site ID. If not defined, current site.
      * @return Promise resolved when the book is retrieved.
      */
-    protected getBookByField(courseId: number, key: string, value: any, siteId?: string): Promise<AddonModBookBook> {
-        return this.sitesProvider.getSite(siteId).then((site) => {
+    protected getBookByField(courseId: number, key: string, value: any, options: CoreSitesCommonWSOptions = {})
+            : Promise<AddonModBookBook> {
+
+        return this.sitesProvider.getSite(options.siteId).then((site) => {
             const params = {
-                    courseids: [courseId]
-                },
-                preSets = {
-                    cacheKey: this.getBookDataCacheKey(courseId),
-                    updateFrequency: CoreSite.FREQUENCY_RARELY
-                };
+                courseids: [courseId]
+            };
+            const preSets = {
+                cacheKey: this.getBookDataCacheKey(courseId),
+                updateFrequency: CoreSite.FREQUENCY_RARELY,
+                component: AddonModBookProvider.COMPONENT,
+                ...this.sitesProvider.getReadingStrategyPreSets(options.readingStrategy), // Include reading strategy preSets.
+            };
 
             return site.read('mod_book_get_books_by_courses', params, preSets)
                     .then((response: AddonModBookGetBooksByCoursesResult): any => {
@@ -128,19 +156,11 @@ export class AddonModBookProvider {
             return this.sitesProvider.getCurrentSite().checkAndFixPluginfileURL(indexUrl);
         }
 
-        return promise.then((url) => {
-            // Fetch the URL content.
-            const promise = this.http.get(url).toPromise();
+        return promise.then(async (url) => {
+            const content = await this.wsProvider.getText(url);
 
-            return promise.then((response: Response): any => {
-                const content = response.text();
-                if (typeof content !== 'string') {
-                    return Promise.reject(null);
-                } else {
-                    // Now that we have the content, we update the SRC to point back to the external resource.
-                    return this.domUtils.restoreSourcesInHtml(content, contentsMap[chapterId].paths);
-                }
-            });
+            // Now that we have the content, we update the SRC to point back to the external resource.
+            return this.domUtils.restoreSourcesInHtml(content, contentsMap[chapterId].paths);
         });
     }
 
@@ -218,15 +238,15 @@ export class AddonModBookProvider {
      *
      * @param chapters The chapters list.
      * @param chapterId The current chapter.
-     * @return The next chapter id.
+     * @return The next chapter.
      */
-    getNextChapter(chapters: AddonModBookTocChapter[], chapterId: string): string {
-        let next = '0';
+    getNextChapter(chapters: AddonModBookTocChapter[], chapterId: string): AddonModBookTocChapter {
+        let next: AddonModBookTocChapter;
 
         for (let i = 0; i < chapters.length; i++) {
             if (chapters[i].id == chapterId) {
                 if (typeof chapters[i + 1] != 'undefined') {
-                    next = chapters[i + 1].id;
+                    next = chapters[i + 1];
                     break;
                 }
             }
@@ -240,16 +260,16 @@ export class AddonModBookProvider {
      *
      * @param chapters The chapters list.
      * @param chapterId The current chapter.
-     * @return The next chapter id.
+     * @return The next chapter.
      */
-    getPreviousChapter(chapters: AddonModBookTocChapter[], chapterId: string): string {
-        let previous = '0';
+    getPreviousChapter(chapters: AddonModBookTocChapter[], chapterId: string): AddonModBookTocChapter {
+        let previous: AddonModBookTocChapter;
 
         for (let i = 0; i < chapters.length; i++) {
             if (chapters[i].id == chapterId) {
                 break;
             }
-            previous = chapters[i].id;
+            previous = chapters[i];
         }
 
         return previous;

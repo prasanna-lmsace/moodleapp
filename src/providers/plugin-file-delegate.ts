@@ -18,7 +18,10 @@ import { CoreLoggerProvider } from './logger';
 import { CoreSitesProvider } from './sites';
 import { CoreWSExternalFile } from '@providers/ws';
 import { FileEntry } from '@ionic-native/file';
+import { CoreFilepool } from './filepool';
+import { CoreConstants } from '@core/constants';
 import { CoreDelegate, CoreDelegateHandler } from '@classes/delegate';
+import { makeSingleton } from '@singletons/core.singletons';
 
 /**
  * Interface that all plugin file handlers must implement.
@@ -85,6 +88,15 @@ export interface CorePluginFileHandler extends CoreDelegateHandler {
     getFileSize?(file: CoreWSExternalFile, siteId?: string): Promise<number>;
 
     /**
+     * Check if a file is downloadable.
+     *
+     * @param file The file data.
+     * @param siteId Site ID. If not defined, current site.
+     * @return Promise resolved with a boolean and a reason why it isn't downloadable if needed.
+     */
+    isFileDownloadable?(file: CoreWSExternalFile, siteId?: string): Promise<CorePluginFileDownloadableResult>;
+
+    /**
      * Check whether the file should be treated by this handler. It is used in functions where the component isn't used.
      *
      * @param file The file data.
@@ -98,10 +110,26 @@ export interface CorePluginFileHandler extends CoreDelegateHandler {
      * @param fileUrl The file URL used to download the file.
      * @param file The file entry of the downloaded file.
      * @param siteId Site ID. If not defined, current site.
+     * @param onProgress Function to call on progress.
      * @return Promise resolved when done.
      */
-    treatDownloadedFile?(fileUrl: string, file: FileEntry, siteId?: string): Promise<any>;
+    treatDownloadedFile?(fileUrl: string, file: FileEntry, siteId?: string, onProgress?: (event: any) => any): Promise<any>;
 }
+
+/**
+ * Data about if a file is downloadable.
+ */
+export type CorePluginFileDownloadableResult = {
+    /**
+     * Whether it's downloadable.
+     */
+    downloadable: boolean;
+
+    /**
+     * If not downloadable, the reason why it isn't.
+     */
+    reason?: string;
+};
 
 /**
  * Delegate to register pluginfile information handlers.
@@ -155,16 +183,22 @@ export class CorePluginFileDelegate extends CoreDelegate {
      * @param siteId Site ID. If not defined, current site.
      * @return Promise resolved with the file to use. Rejected if cannot download.
      */
-    protected getHandlerDownloadableFile(file: CoreWSExternalFile, handler: CorePluginFileHandler, siteId?: string)
+    protected async getHandlerDownloadableFile(file: CoreWSExternalFile, handler: CorePluginFileHandler, siteId?: string)
             : Promise<CoreWSExternalFile> {
 
-        if (handler && handler.getDownloadableFile) {
-            return handler.getDownloadableFile(file, siteId).then((newFile) => {
-                return newFile || file;
-            });
+        const isDownloadable = await this.isFileDownloadable(file, siteId);
+
+        if (!isDownloadable.downloadable) {
+            throw isDownloadable.reason;
         }
 
-        return Promise.resolve(file);
+        if (handler && handler.getDownloadableFile) {
+            const newFile = await handler.getDownloadableFile(file, siteId);
+
+            return newFile || file;
+        }
+
+        return file;
     }
 
     /**
@@ -204,33 +238,51 @@ export class CorePluginFileDelegate extends CoreDelegate {
     }
 
     /**
+     * Sum the filesizes from a list if they are not downloaded.
+     *
+     * @param files List of files to sum its filesize.
+     * @param siteId Site ID. If not defined, current site.
+     * @return Promise resolved with file size and a boolean to indicate if it is the total size or only partial.
+     */
+    async getFilesDownloadSize(files: CoreWSExternalFile[], siteId?: string): Promise<{ size: number, total: boolean }> {
+        const filteredFiles = [];
+
+        await Promise.all(files.map(async (file) => {
+            const state = await CoreFilepool.instance.getFileStateByUrl(siteId, file.fileurl, file.timemodified);
+
+            if (state != CoreConstants.DOWNLOADED && state != CoreConstants.NOT_DOWNLOADABLE) {
+                filteredFiles.push(file);
+            }
+        }));
+
+        return this.getFilesSize(filteredFiles, siteId);
+    }
+
+    /**
      * Sum the filesizes from a list of files checking if the size will be partial or totally calculated.
      *
      * @param files List of files to sum its filesize.
      * @param siteId Site ID. If not defined, current site.
      * @return Promise resolved with file size and a boolean to indicate if it is the total size or only partial.
      */
-    getFilesSize(files: CoreWSExternalFile[], siteId?: string): Promise<{ size: number, total: boolean }> {
-        const promises = [],
-            result = {
-                size: 0,
-                total: true
-            };
+    async getFilesSize(files: CoreWSExternalFile[], siteId?: string): Promise<{ size: number, total: boolean }> {
+        const result = {
+            size: 0,
+            total: true
+        };
 
-        files.forEach((file) => {
-            promises.push(this.getFileSize(file, siteId).then((size) => {
-                if (typeof size == 'undefined') {
-                    // We don't have the file size, cannot calculate its total size.
-                    result.total = false;
-                } else {
-                    result.size += size;
-                }
-            }));
-        });
+        await Promise.all(files.map(async (file) => {
+            const size = await this.getFileSize(file, siteId);
 
-        return Promise.all(promises).then(() => {
-            return result;
-        });
+            if (typeof size == 'undefined') {
+                // We don't have the file size, cannot calculate its total size.
+                result.total = false;
+            } else {
+                result.size += size;
+            }
+        }));
+
+        return result;
     }
 
     /**
@@ -240,23 +292,32 @@ export class CorePluginFileDelegate extends CoreDelegate {
      * @param siteId Site ID. If not defined, current site.
      * @return Promise resolved with the size.
      */
-    getFileSize(file: CoreWSExternalFile, siteId?: string): Promise<number> {
+    async getFileSize(file: CoreWSExternalFile, siteId?: string): Promise<number> {
+        const isDownloadable = await this.isFileDownloadable(file, siteId);
+
+        if (!isDownloadable.downloadable) {
+            return 0;
+        }
+
         const handler = this.getHandlerForFile(file);
 
         // First of all check if file can be downloaded.
-        return this.getHandlerDownloadableFile(file, handler, siteId).then((file) => {
-            if (!file) {
-                return 0;
-            }
+        const downloadableFile = await this.getHandlerDownloadableFile(file, handler, siteId);
+        if (!downloadableFile) {
+            return 0;
+        }
 
-            if (handler && handler.getFileSize) {
-                return handler.getFileSize(file, siteId).catch(() => {
-                    return file.filesize;
-                });
-            }
+        if (handler && handler.getFileSize) {
+            try {
+                const size = handler.getFileSize(downloadableFile, siteId);
 
-            return Promise.resolve(file.filesize);
-        });
+                return size;
+            } catch (error) {
+                // Ignore errors.
+            }
+        }
+
+        return downloadableFile.filesize;
     }
 
     /**
@@ -273,6 +334,24 @@ export class CorePluginFileDelegate extends CoreDelegate {
                 return handler;
             }
         }
+    }
+
+    /**
+     * Check if a file is downloadable.
+     *
+     * @param file The file data.
+     * @param siteId Site ID. If not defined, current site.
+     * @return Promise with the data.
+     */
+    isFileDownloadable(file: CoreWSExternalFile, siteId?: string): Promise<CorePluginFileDownloadableResult> {
+        const handler = this.getHandlerForFile(file);
+
+        if (handler && handler.isFileDownloadable) {
+            return handler.isFileDownloadable(file, siteId);
+        }
+
+        // Default to true.
+        return Promise.resolve({downloadable: true});
     }
 
     /**
@@ -302,15 +381,18 @@ export class CorePluginFileDelegate extends CoreDelegate {
      * @param fileUrl The file URL used to download the file.
      * @param file The file entry of the downloaded file.
      * @param siteId Site ID. If not defined, current site.
+     * @param onProgress Function to call on progress.
      * @return Promise resolved when done.
      */
-    treatDownloadedFile(fileUrl: string, file: FileEntry, siteId?: string): Promise<any> {
+    treatDownloadedFile(fileUrl: string, file: FileEntry, siteId?: string, onProgress?: (event: any) => any): Promise<any> {
         const handler = this.getHandlerForFile({fileurl: fileUrl});
 
         if (handler && handler.treatDownloadedFile) {
-            return handler.treatDownloadedFile(fileUrl, file, siteId);
+            return handler.treatDownloadedFile(fileUrl, file, siteId, onProgress);
         }
 
         return Promise.resolve();
     }
 }
+
+export class CorePluginFile extends makeSingleton(CorePluginFileDelegate) {}

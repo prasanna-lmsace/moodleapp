@@ -12,7 +12,7 @@
 // default Sass variables, belong in "theme/variables.scss".
 //
 // To declare rules for a specific mode, create a child rule
-// for the .md, .ios, or .wp mode classes. The mode class is
+// for the .md, or .ios mode classes. The mode class is
 // automatically applied to the <body> element in the app.
 
 // Alignment
@@ -44,19 +44,6 @@ ion-app.app-root {
 
   .button-no-uppercase {
     text-transform: none;
-  }
-
-  @include media-breakpoint-up(sm) {
-    .core-center-view .scroll-content {
-      display: flex!important;
-      align-content: center !important;
-      align-items: center !important;
-      > * {
-        margin: 0 auto;
-        width: 100%;
-        max-width: 600px;
-      }
-    }
   }
 
   @include media-breakpoint-down(sm) {
@@ -106,19 +93,28 @@ ion-app.app-root {
   .item h2 {
     text-overflow: inherit;
     overflow: inherit;
+    ion-icon, core-icon {
+      vertical-align: bottom;
+    }
+  }
+
+  .item[detail-push] {
+    cursor: pointer;
   }
 
   .core-nav-item-selected, .item.core-nav-item-selected {
     @include core-selected-item($core-splitview-selected);
   }
 
-  // Recover borders on items inside cards.
+  // Recover borders on items inside cards and lists.
   .card.with-borders .core-as-item,
+  .list.with-borders .core-as-item,
   .core-as-item {
     @include core-as-items();
   }
 
-  .card.with-borders .item {
+  .card.with-borders > .item,
+  .list.with-borders > .item {
     @include core-items();
   }
 
@@ -203,6 +199,10 @@ ion-app.app-root {
   ion-avatar ion-img, ion-avatar img {
     text-indent: -99999px;
     background-color: $gray-light;
+  }
+
+  ion-note.core-note-block {
+    display: block;
   }
 
   // Form items
@@ -333,6 +333,10 @@ ion-app.app-root {
         width: 100%;
     }
 
+    &[fullonclick="true"] {
+      cursor: pointer;
+    }
+
     audio, video, a, iframe {
       pointer-events: auto;
     }
@@ -371,6 +375,7 @@ ion-app.app-root {
       background-color: rgba(0, 0, 0, .5);
     }
     text-align: center;
+    cursor: pointer;
 
     width: 32px;
     height: 32px;
@@ -428,12 +433,23 @@ ion-app.app-root {
     }
     @each $color-name, $color-base, $color-contrast in get-colors($colors) {
       &.select-md-#{$color-name},
-      &.select-ios-#{$color-name},
-      &.select-wp-#{$color-name} {
+      &.select-ios-#{$color-name} {
          color: $color-base;
 
         .select-icon .select-icon-inner {
           color: $color-base;
+        }
+      }
+    }
+    @include darkmode() {
+      @each $color-name, $color-base, $color-contrast in get-colors($colors-dark) {
+        &.select-md-#{$color-name},
+        &.select-ios-#{$color-name} {
+           color: $color-base;
+
+          .select-icon .select-icon-inner {
+            color: $color-base;
+          }
         }
       }
     }
@@ -466,11 +482,6 @@ ion-app.app-root {
     &.button-ios {
       background: $card-ios-background-color;
       box-shadow: $card-ios-box-shadow;
-    }
-
-    &.select-wp,
-    &.button-wp {
-      background: $card-wp-background-color;
     }
 
     .select-text {
@@ -506,9 +517,7 @@ ion-app.app-root {
       &.select-md,
       &.button-md,
       &.select-ios,
-      &.button-ios,
-      &.select-wp,
-      &.button-wp {
+      &.button-ios {
         background: $core-dark-item-bg-color;
       }
     }
@@ -660,9 +669,13 @@ ion-app.app-root {
       overflow: auto;
   }
 
-  .action-sheet-wrapper {
+  ion-action-sheet .action-sheet-wrapper .action-sheet-container {
     .action-sheet-button.action-sheet-cancel {
       color: $core-action-sheet-cancel-color;
+      @include darkmode() {
+        color: $core-dark-action-sheet-cancel-color;
+        background-color: $black;
+      }
     }
     .action-sheet-selected {
       color: $core-color;
@@ -671,6 +684,7 @@ ion-app.app-root {
 
   .alert-message {
       overflow-y: auto;
+      user-select: text;
   }
   ion-alert.core-nohead {
 
@@ -680,9 +694,6 @@ ion-app.app-root {
     &.alert-ios .alert-message {
       padding-top: $alert-ios-message-padding-bottom;
     }
-    &.alert-wp .alert-message {
-      padding-top: $alert-wp-message-padding-bottom;
-    }
     .alert-head {
       display: none;
     }
@@ -690,6 +701,16 @@ ion-app.app-root {
 
   ion-alert .alert-checkbox-group {
     border: 0;
+  }
+
+  ion-alert .alert-message + div:not(.alert-button-group) {
+    overflow: auto;
+    alert-checkbox-group,
+    alert-radio-group,
+    alert-input-group {
+      overflow: visible;
+      max-height: none;
+    }
   }
 
   ion-toast.core-toast-success .toast-wrapper{
@@ -728,11 +749,6 @@ ion-app.app-root {
   .header .toolbar-ios {
     height: $toolbar-ios-height;
     max-height: $toolbar-ios-height;
-  }
-
-  .header .toolbar-wp {
-    height: $toolbar-wp-height;
-    max-height: $toolbar-wp-height;
   }
 
   .header .toolbar-md {
@@ -800,11 +816,6 @@ ion-app.app-root {
         @include ios-input-highlight($color-base);
       }
 
-      &.item-wp .text-input,
-      &.item-wp.item-input.ng-valid.item-input-has-value:not(.input-has-focus):not(.item-input-has-focus) .text-input,
-      &.item-wp.item-input.ng-valid.input-has-value:not(.input-has-focus):not(.item-input-has-focus) .text-input {
-        border-color: $color-base;
-      }
     }
 
     .core-#{$color-name}-selected-item {
@@ -860,6 +871,10 @@ ion-app.app-root {
     display: block;
     width: 100% !important;
     height: 100% !important;
+  }
+
+  .core-modal-force-on-top {
+    z-index: 100000 !important;
   }
 
   @media only screen and (min-height: 400px) and (min-width: 300px) {
@@ -1081,6 +1096,7 @@ ion-app.app-root {
   }
 
   .core-expandable {
+    cursor: pointer;
     ion-icon[item-start] + .item-inner {
       @include margin-horizontal(0px, null);
     }
@@ -1101,6 +1117,16 @@ ion-app.app-root {
     transition: opacity 100ms ease-in-out;
     opacity: .1;
   }
+
+  a.item,
+  .core-clickable,
+  select {
+    cursor: pointer;
+  }
+
+  a.autolink.glossary:hover {
+    cursor: help;
+  }
 }
 
 @each $color-name, $color-base, $color-contrast in get-colors($colors) {
@@ -1111,7 +1137,6 @@ ion-app.app-root {
   }
 
   .item-divider-md-#{$color-name} h2,
-  .item-divider-wp-#{$color-name} h2,
   .item-divider-ios-#{$color-name} h2 {
     color: $color-contrast;
   }
@@ -1165,6 +1190,16 @@ ion-item-divider {
 ion-app.platform-desktop {
   video::-webkit-media-text-track-display {
     white-space: normal !important;
+  }
+
+  audio, video {
+    &::-webkit-media-controls-overlay-play-button,
+    &::-webkit-media-controls-play-button,
+    &::-webkit-media-controls-timeline,
+    &::-webkit-media-controls-mute-button,
+    &::-webkit-media-controls-fullscreen-button {
+      cursor: pointer;
+    }
   }
 
   &.platform-windows {
@@ -1267,6 +1302,24 @@ ion-app.app-root {
   a.item-ios:not([detail-none]) .item-inner {
     [item-end] {
       @include safe-area-margin-horizontal(($item-ios-padding-start / 2), ($item-ios-padding-end / 2));
+    }
+  }
+}
+
+// QR scan. The scanner is at the background of the app, we need to hide the elements that overlay it.
+.core-scanning-qr {
+  ion-app.app-root {
+    background-color: transparent !important;
+
+    .ion-page {
+      background-color: transparent !important;
+    }
+    ion-content, ion-backdrop, ion-modal:not(.core-modal-fullscreen), core-ion-tabs {
+      display: none !important;
+    }
+
+    &.ios .ion-page.show-page~.nav-decor {
+      display: none !important;
     }
   }
 }

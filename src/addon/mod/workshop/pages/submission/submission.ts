@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Component, OnInit, OnDestroy, Optional, ViewChild } from '@angular/core';
+import { Component, OnInit, OnDestroy, Optional, ViewChild, ElementRef } from '@angular/core';
 import { Content, IonicPage, NavParams, NavController } from 'ionic-angular';
 import { FormGroup, FormBuilder } from '@angular/forms';
 import { TranslateService } from '@ngx-translate/core';
@@ -41,6 +41,7 @@ import { AddonModWorkshopSyncProvider } from '../../providers/sync';
 export class AddonModWorkshopSubmissionPage implements OnInit, OnDestroy {
 
     @ViewChild(AddonModWorkshopAssessmentStrategyComponent) assessmentStrategy: AddonModWorkshopAssessmentStrategyComponent;
+    @ViewChild('feedbackFormEl') formElement: ElementRef;
 
     module: any;
     workshop: any;
@@ -143,14 +144,16 @@ export class AddonModWorkshopSubmissionPage implements OnInit, OnDestroy {
      *
      * @return Resolved if we can leave it, rejected if not.
      */
-    ionViewCanLeave(): boolean | Promise<void> {
+    async ionViewCanLeave(): Promise<void> {
         const assessmentHasChanged = this.assessmentStrategy && this.assessmentStrategy.hasDataChanged();
         if (this.forceLeave || (!this.hasEvaluationChanged() && !assessmentHasChanged)) {
-            return true;
+            return;
         }
 
         // Show confirmation if some data has been modified.
-        return this.domUtils.showConfirm(this.translate.instant('core.confirmcanceledit'));
+        await this.domUtils.showConfirm(this.translate.instant('core.confirmcanceledit'));
+
+        this.domUtils.triggerFormCancelledEvent(this.formElement, this.siteId);
     }
 
     /**
@@ -187,7 +190,9 @@ export class AddonModWorkshopSubmissionPage implements OnInit, OnDestroy {
      * @return Resolved when done.
      */
     protected fetchSubmissionData(): Promise<void> {
-        return this.workshopHelper.getSubmissionById(this.workshopId, this.submissionId).then((submissionData) => {
+        return this.workshopHelper.getSubmissionById(this.workshopId, this.submissionId, {
+            cmId: this.module.id,
+        }).then((submissionData) => {
             const promises = [];
 
             this.submission = submissionData;
@@ -204,8 +209,9 @@ export class AddonModWorkshopSubmissionPage implements OnInit, OnDestroy {
 
             if (this.access.canviewallassessments) {
                 // Get new data, different that came from stateParams.
-                promises.push(this.workshopProvider.getSubmissionAssessments(this.workshopId, this.submissionId)
-                        .then((subAssessments) => {
+                promises.push(this.workshopProvider.getSubmissionAssessments(this.workshopId, this.submissionId, {
+                    cmId: this.module.id,
+                }).then((subAssessments) => {
                     // Only allow the student to delete their own submission if it's still editable and hasn't been assessed.
                     if (this.canDelete) {
                         this.canDelete = !subAssessments.length;
@@ -225,22 +231,26 @@ export class AddonModWorkshopSubmissionPage implements OnInit, OnDestroy {
                 }));
             } else if (this.currentUserId == this.userId && this.assessmentId) {
                 // Get new data, different that came from stateParams.
-                promises.push(this.workshopProvider.getAssessment(this.workshopId, this.assessmentId).then((assessment) => {
+                promises.push(this.workshopProvider.getAssessment(this.workshopId, this.assessmentId, {
+                    cmId: this.module.id,
+                }).then((assessment) => {
                     // Only allow the student to delete their own submission if it's still editable and hasn't been assessed.
                     if (this.canDelete) {
                         this.canDelete = !assessment;
                     }
 
-                    assessment.userid = assessment.reviewerid;
-                    assessment = this.workshopHelper.realGradeValue(this.workshop, assessment);
-
-                    if (this.currentUserId == assessment.userid) {
-                        this.ownAssessment = assessment;
-                        assessment.ownAssessment = true;
-                    }
+                    assessment = this.parseAssessment(assessment);
 
                     this.submissionInfo.reviewedby = [assessment];
                 }));
+            } else if (this.workshop.phase == AddonModWorkshopProvider.PHASE_CLOSED && this.userId == this.currentUserId) {
+                this.workshopProvider.getSubmissionAssessments(this.workshopId, this.submissionId, {
+                    cmId: this.module.id,
+                }).then((assessments) => {
+                    this.submissionInfo.reviewedby = assessments.map((assessment) => {
+                        return this.parseAssessment(assessment);
+                    });
+                });
             }
 
             if (this.canAddFeedback || this.workshop.phase == AddonModWorkshopProvider.PHASE_CLOSED) {
@@ -319,6 +329,24 @@ export class AddonModWorkshopSubmissionPage implements OnInit, OnDestroy {
         }).finally(() => {
             this.loaded = true;
         });
+    }
+
+    /**
+     * Parse assessment to be shown.
+     *
+     * @param  assessment Original assessment.
+     * @return Parsed assessment.
+     */
+    protected parseAssessment(assessment: any): any {
+        assessment.userid = assessment.reviewerid;
+        assessment = this.workshopHelper.realGradeValue(this.workshop, assessment);
+
+        if (this.currentUserId == assessment.userid) {
+            this.ownAssessment = assessment;
+            assessment.ownAssessment = true;
+        }
+
+        return assessment;
     }
 
     /**
@@ -444,7 +472,10 @@ export class AddonModWorkshopSubmissionPage implements OnInit, OnDestroy {
 
         // Try to send it to server.
         return this.workshopProvider.evaluateSubmission(this.workshopId, this.submissionId, this.courseId, inputData.text,
-                inputData.published, inputData.grade).then(() => {
+                inputData.published, inputData.grade).then((result) => {
+
+            this.domUtils.triggerFormSubmittedEvent(this.formElement, !!result, this.siteId);
+
             const data = {
                 workshopId: this.workshopId,
                 cmId: this.module.cmid,

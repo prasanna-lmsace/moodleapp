@@ -16,10 +16,10 @@ import { Injectable } from '@angular/core';
 import { TranslateService } from '@ngx-translate/core';
 import { CoreAppProvider } from '@providers/app';
 import { CoreFilepoolProvider } from '@providers/filepool';
-import { CoreSitesProvider } from '@providers/sites';
+import { CoreSitesProvider, CoreSitesReadingStrategy } from '@providers/sites';
 import { CoreDomUtilsProvider } from '@providers/utils/dom';
 import { CoreUtilsProvider } from '@providers/utils/utils';
-import { CoreCourseProvider } from '@core/course/providers/course';
+import { CoreCourseProvider, CoreCourseCommonModWSOptions } from '@core/course/providers/course';
 import { CoreUserProvider } from '@core/user/providers/user';
 import { CoreCourseActivityPrefetchHandlerBase } from '@core/course/classes/activity-prefetch-handler';
 import { CoreGroupsProvider } from '@providers/groups';
@@ -69,7 +69,7 @@ export class AddonModForumPrefetchHandler extends CoreCourseActivityPrefetchHand
             const files = this.getIntroFilesFromInstance(module, forum);
 
             // Get posts.
-            return this.getPostsForPrefetch(forum).then((posts) => {
+            return this.getPostsForPrefetch(forum, {cmId: module.id}).then((posts) => {
                 // Add posts attachments and embedded files.
                 return files.concat(this.getPostsFiles(posts));
             });
@@ -87,7 +87,8 @@ export class AddonModForumPrefetchHandler extends CoreCourseActivityPrefetchHand
      */
     protected getPostsFiles(posts: any[]): any[] {
         let files = [];
-        const getInlineFiles = this.sitesProvider.getCurrentSite().isVersionGreaterEqualThan('3.2');
+        const getInlineFiles = this.sitesProvider.getCurrentSite() &&
+                this.sitesProvider.getCurrentSite().isVersionGreaterEqualThan('3.2');
 
         posts.forEach((post) => {
             if (post.attachments && post.attachments.length) {
@@ -107,12 +108,19 @@ export class AddonModForumPrefetchHandler extends CoreCourseActivityPrefetchHand
      * Get the posts to be prefetched.
      *
      * @param forum Forum instance.
+     * @param options Other options.
      * @return Promise resolved with array of posts.
      */
-    protected getPostsForPrefetch(forum: any): Promise<any[]> {
+    protected getPostsForPrefetch(forum: any, options: CoreCourseCommonModWSOptions = {}): Promise<any[]> {
         const promises = this.forumProvider.getAvailableSortOrders().map((sortOrder) => {
             // Get discussions in first 2 pages.
-            return this.forumProvider.getDiscussionsInPages(forum.id, sortOrder.value, false, 2).then((response) => {
+            const discussionsOptions = {
+                sortOrder: sortOrder.value,
+                numPages: 2,
+                ...options, // Include all options.
+            };
+
+            return this.forumProvider.getDiscussionsInPages(forum.id, discussionsOptions).then((response) => {
                 if (response.error) {
                     return Promise.reject(null);
                 }
@@ -120,7 +128,7 @@ export class AddonModForumPrefetchHandler extends CoreCourseActivityPrefetchHand
                 const promises = [];
 
                 response.discussions.forEach((discussion) => {
-                    promises.push(this.forumProvider.getDiscussionPosts(discussion.discussion));
+                    promises.push(this.forumProvider.getDiscussionPosts(discussion.discussion, options));
                 });
 
               return Promise.all(promises);
@@ -199,42 +207,41 @@ export class AddonModForumPrefetchHandler extends CoreCourseActivityPrefetchHand
      * @return Promise resolved when done.
      */
     protected prefetchForum(module: any, courseId: number, single: boolean, siteId: string): Promise<any> {
+        const commonOptions = {
+            readingStrategy: CoreSitesReadingStrategy.OnlyNetwork,
+            siteId,
+        };
+        const modOptions = {
+            cmId: module.id,
+            ...commonOptions, // Include all common options.
+        };
+
         // Get the forum data.
-        return this.forumProvider.getForum(courseId, module.id).then((forum) => {
+        return this.forumProvider.getForum(courseId, module.id, commonOptions).then((forum) => {
             const promises = [];
 
             // Prefetch the posts.
-            promises.push(this.getPostsForPrefetch(forum).then((posts) => {
+            promises.push(this.getPostsForPrefetch(forum, modOptions).then((posts) => {
                 const promises = [];
 
-                // Gather user profile images.
-                const avatars = {}; // List of user avatars, preventing duplicates.
-
-                posts.forEach((post) => {
-                    if (post.userpictureurl) {
-                        avatars[post.userpictureurl] = true;
-                    }
-                });
-
-                // Prefetch intro files, attachments, embedded files and user avatars.
-                const avatarFiles = Object.keys(avatars).map((url) => {
-                    return { fileurl: url };
-                });
-                const files = this.getIntroFilesFromInstance(module, forum).concat(this.getPostsFiles(posts)).concat(avatarFiles);
+                const files = this.getIntroFilesFromInstance(module, forum).concat(this.getPostsFiles(posts));
                 promises.push(this.filepoolProvider.addFilesToQueue(siteId, files, this.component, module.id));
 
                 // Prefetch groups data.
-                promises.push(this.prefetchGroupsInfo(forum, courseId, forum.cancreatediscussions));
+                promises.push(this.prefetchGroupsInfo(forum, courseId, forum.cancreatediscussions, siteId));
+
+                // Prefetch avatars.
+                promises.push(this.userProvider.prefetchUserAvatars(posts, 'userpictureurl', siteId));
 
                 return Promise.all(promises);
             }));
 
             // Prefetch access information.
-            promises.push(this.forumProvider.getAccessInformation(forum.id));
+            promises.push(this.forumProvider.getAccessInformation(forum.id, modOptions));
 
             // Prefetch sort order preference.
             if (this.forumProvider.isDiscussionListSortingAvailable()) {
-               promises.push(this.userProvider.getUserPreference(AddonModForumProvider.PREFERENCE_SORTORDER));
+               promises.push(this.userProvider.getUserPreference(AddonModForumProvider.PREFERENCE_SORTORDER, siteId));
             }
 
             return Promise.all(promises);
@@ -247,30 +254,36 @@ export class AddonModForumPrefetchHandler extends CoreCourseActivityPrefetchHand
      * @param module The module object returned by WS.
      * @param courseI Course ID the module belongs to.
      * @param canCreateDiscussions Whether the user can create discussions in the forum.
+     * @param siteId Site ID. If not defined, current site.
      * @return Promise resolved when group data has been prefetched.
      */
-    protected prefetchGroupsInfo(forum: any, courseId: number, canCreateDiscussions: boolean): any {
+    protected prefetchGroupsInfo(forum: any, courseId: number, canCreateDiscussions: boolean, siteId?: string): any {
+        const options = {
+            cmId: forum.cmid,
+            siteId,
+        };
+
         // Check group mode.
-        return this.groupsProvider.getActivityGroupMode(forum.cmid).then((mode) => {
+        return this.groupsProvider.getActivityGroupMode(forum.cmid, siteId).then((mode) => {
             if (mode !== CoreGroupsProvider.SEPARATEGROUPS && mode !== CoreGroupsProvider.VISIBLEGROUPS) {
                 // Activity doesn't use groups. Prefetch canAddDiscussionToAll to determine if user can pin/attach.
-                return this.forumProvider.canAddDiscussionToAll(forum.id).catch(() => {
+                return this.forumProvider.canAddDiscussionToAll(forum.id, options).catch(() => {
                         // Ignore errors.
                 });
             }
 
             // Activity uses groups, prefetch allowed groups.
-            return this.groupsProvider.getActivityAllowedGroups(forum.cmid).then((result) => {
+            return this.groupsProvider.getActivityAllowedGroups(forum.cmid, undefined, siteId).then((result) => {
                 if (mode === CoreGroupsProvider.SEPARATEGROUPS) {
                     // Groups are already filtered by WS. Prefetch canAddDiscussionToAll to determine if user can pin/attach.
-                    return this.forumProvider.canAddDiscussionToAll(forum.id).catch(() => {
+                    return this.forumProvider.canAddDiscussionToAll(forum.id, options).catch(() => {
                         // Ignore errors.
                     });
                 }
 
                 if (canCreateDiscussions) {
                     // Prefetch data to check the visible groups when creating discussions.
-                    return this.forumProvider.canAddDiscussionToAll(forum.id).catch(() => {
+                    return this.forumProvider.canAddDiscussionToAll(forum.id, options).catch(() => {
                         // The call failed, let's assume he can't.
                         return {
                             status: false
@@ -284,7 +297,7 @@ export class AddonModForumPrefetchHandler extends CoreCourseActivityPrefetchHand
                         // The user can't post to all groups, let's check which groups he can post to.
                         const groupPromises = [];
                         result.groups.forEach((group) => {
-                            groupPromises.push(this.forumProvider.canAddDiscussion(forum.id, group.id).catch(() => {
+                            groupPromises.push(this.forumProvider.canAddDiscussion(forum.id, group.id, options).catch(() => {
                                 // Ignore errors.
                             }));
                         });

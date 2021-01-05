@@ -13,7 +13,6 @@
 // limitations under the License.
 
 import { Injectable } from '@angular/core';
-import { Http } from '@angular/http';
 import { TranslateService } from '@ngx-translate/core';
 import { CoreAppProvider } from '@providers/app';
 import { CoreEventsProvider } from '@providers/events';
@@ -33,6 +32,7 @@ import { CoreCourseProvider } from '@core/course/providers/course';
 import { CoreCoursesProvider } from '@core/courses/providers/courses';
 import { CoreFilterHelperProvider } from '@core/filter/providers/helper';
 import { CorePluginFileDelegate } from '@providers/plugin-file-delegate';
+import { CoreWSProvider } from '@providers/ws';
 
 // Delegates
 import { CoreMainMenuDelegate } from '@core/mainmenu/providers/delegate';
@@ -93,7 +93,7 @@ export class CoreSitePluginsHelperProvider {
             private moduleDelegate: CoreCourseModuleDelegate,
             private userDelegate: CoreUserDelegate,
             private langProvider: CoreLangProvider,
-            private http: Http,
+            private wsProvider: CoreWSProvider,
             private sitePluginsProvider: CoreSitePluginsProvider,
             private prefetchDelegate: CoreCourseModulePrefetchDelegate,
             private compileProvider: CoreCompileProvider,
@@ -208,15 +208,7 @@ export class CoreSitePluginsHelperProvider {
                    undefined, undefined, undefined, handlerSchema.styles.version).then((url) => {
 
                 // File is downloaded, get the contents.
-                return this.http.get(url).toPromise();
-            }).then((response): any => {
-                const text = response && response.text();
-
-                if (typeof text == 'string') {
-                    return text;
-                } else {
-                    return Promise.reject(null);
-                }
+                return this.wsProvider.getText(url);
             });
         });
     }
@@ -447,7 +439,21 @@ export class CoreSitePluginsHelperProvider {
         styleEl.setAttribute('id', 'siteplugin-' + uniqueName);
         styleEl.innerHTML = cssCode;
 
-        document.head.appendChild(styleEl);
+        // To ensure consistency, insert in alphabetical order among other site plugin styles.
+        let lowestGreater = null;
+        Array.from(document.head.querySelectorAll('style')).forEach((other) => {
+            if (/^siteplugin-/.test(other.id) && other.id > styleEl.id) {
+                if (lowestGreater === null || other.id < lowestGreater.id) {
+                    lowestGreater = other;
+                }
+            }
+        });
+
+        if (lowestGreater) {
+            document.head.insertBefore(styleEl, lowestGreater);
+        } else {
+            document.head.appendChild(styleEl);
+        }
 
         // Styles have been loaded, now treat the CSS.
         this.filepoolProvider.treatCSSCode(siteId, fileUrl, cssCode, CoreSitePluginsProvider.COMPONENT, uniqueName, version)
@@ -690,7 +696,7 @@ export class CoreSitePluginsHelperProvider {
             prefixedTitle = this.getPrefixedString(plugin.addon, titleString);
 
         this.blockDelegate.registerHandler(
-            new CoreSitePluginsBlockHandler(uniqueName, prefixedTitle, blockName, handlerSchema, initResult));
+            new CoreSitePluginsBlockHandler(uniqueName, prefixedTitle, blockName, handlerSchema, initResult, this.blockDelegate));
 
         return uniqueName;
     }

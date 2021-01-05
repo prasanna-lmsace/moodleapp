@@ -19,6 +19,7 @@ import { CoreCourseModulePrefetchDelegate } from '@core/course/providers/module-
 import { CoreCourseHelperProvider } from '@core/course/providers/helper';
 import { CoreDomUtilsProvider } from '@providers/utils/dom';
 import { TranslateService } from '@ngx-translate/core';
+import { CoreConstants } from '@core/constants';
 
 /**
  * Page that displays the amount of file storage used by each activity on the course, and allows
@@ -69,7 +70,7 @@ export class AddonStorageManagerCourseStoragePage {
                     // But these aren't necessarily consistent, for example mod_frog vs mmaModFrog.
                     // There is nothing enforcing correct values.
                     // Most modules which have large files are downloadable, so I think this is sufficient.
-                    const promise = this.prefetchDelegate.getModuleDownloadedSize(module, this.course.id).
+                    const promise = this.prefetchDelegate.getModuleStoredSize(module, this.course.id).
                         then((size) => {
                             // There are some cases where the return from this is not a valid number.
                             if (!isNaN(size)) {
@@ -84,6 +85,10 @@ export class AddonStorageManagerCourseStoragePage {
 
             Promise.all(allPromises).then(() => {
                 this.loaded = true;
+
+                if (this.totalSize == 0) {
+                    this.markCourseAsNotDownloaded();
+                }
             });
         });
     }
@@ -93,7 +98,17 @@ export class AddonStorageManagerCourseStoragePage {
      *
      * (This works by deleting data for each module on the course that has data.)
      */
-    deleteForCourse(): void {
+    async deleteForCourse(): Promise<void> {
+        try {
+            await this.domUtils.showDeleteConfirm('core.course.confirmdeletestoreddata');
+        } catch (error) {
+            if (!error.coreCanceled) {
+                throw error;
+            }
+
+            return;
+        }
+
         const modules = [];
         this.sections.forEach((section) => {
             section.modules.forEach((module) => {
@@ -113,7 +128,17 @@ export class AddonStorageManagerCourseStoragePage {
      *
      * @param section Section object with information about section and modules
      */
-    deleteForSection(section: any): void {
+    async deleteForSection(section: any): Promise<void> {
+        try {
+            await this.domUtils.showDeleteConfirm('core.course.confirmdeletestoreddata');
+        } catch (error) {
+            if (!error.coreCanceled) {
+                throw error;
+            }
+
+            return;
+        }
+
         const modules = [];
         section.modules.forEach((module) => {
             if (module.totalSize > 0) {
@@ -129,10 +154,22 @@ export class AddonStorageManagerCourseStoragePage {
      *
      * @param module Module details
      */
-    deleteForModule(module: any): void {
-        if (module.totalSize > 0) {
-            this.deleteModules([module]);
+    async deleteForModule(module: any): Promise<void> {
+        if (module.totalSize === 0) {
+            return;
         }
+
+        try {
+            await this.domUtils.showDeleteConfirm('core.course.confirmdeletestoreddata');
+        } catch (error) {
+            if (!error.coreCanceled) {
+                throw error;
+            }
+
+            return;
+        }
+
+        this.deleteModules([module]);
     }
 
     /**
@@ -147,8 +184,8 @@ export class AddonStorageManagerCourseStoragePage {
         const promises = [];
         modules.forEach((module) => {
             // Remove the files.
-            const promise = this.prefetchDelegate.removeModuleFiles(module, this.course.id).then(() => {
-                // When the files are removed, update the size.
+            const promise = this.courseHelperProvider.removeModuleStoredData(module, this.course.id).then(() => {
+                // When the files and cache are removed, update the size.
                 module.parentSection.totalSize -= module.totalSize;
                 this.totalSize -= module.totalSize;
                 module.totalSize = 0;
@@ -162,6 +199,25 @@ export class AddonStorageManagerCourseStoragePage {
             modal.dismiss();
 
             this.domUtils.showErrorModalDefault(error, this.translate.instant('core.errordeletefile'));
+        }).finally(() => {
+            // @TODO This is a workaround that should be more specific solving MOBILE-3305.
+            // Also should take into account all modules are not downloaded.
+
+            // Mark course as not downloaded if course size is 0.
+            if (this.totalSize == 0) {
+                this.markCourseAsNotDownloaded();
+            }
         });
+    }
+
+    /**
+     * Mark course as not downloaded.
+     */
+    protected markCourseAsNotDownloaded(): void {
+        // @TODO This is a workaround that should be more specific solving MOBILE-3305.
+        // Also should take into account all modules are not downloaded.
+        // Check after MOBILE-3188 is integrated.
+
+        this.courseProvider.setCourseStatus(this.course.id, CoreConstants.NOT_DOWNLOADED);
     }
 }
